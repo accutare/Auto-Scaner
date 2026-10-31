@@ -1,0 +1,13 @@
+services:
+  docflow:
+    build: .
+    container_name: docflow
+    restart: unless-stopped        # volta sozinho se travar ou se o servidor reiniciar
+    env_file: .env
+    volumes:
+      - ./dados:/data              # banco de controle e clientes.csv (persistente)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"            # evita o log encher o disco
+        max-file: "5"

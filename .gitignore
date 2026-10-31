@@ -1,0 +1,14 @@
+# NUNCA envie segredos nem dados de clientes para o GitHub
+.env
+.env.*
+!.env.example
+
+dados/
+*.db
+clientes.csv
+!clientes.exemplo.csv
+
+__pycache__/
+*.pyc
+.venv/
+*.zip
