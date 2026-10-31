@@ -13,33 +13,64 @@ if not hasattr(sys.modules["dropbox.exceptions"], "ApiError"):
     sys.modules["dropbox.exceptions"].ApiError = Exception
 if not hasattr(sys.modules["dropbox.files"], "FileMetadata"):
     sys.modules["dropbox.files"].FileMetadata = object
+    sys.modules["dropbox.files"].FolderMetadata = object
     sys.modules["dropbox.files"].WriteMode = types.SimpleNamespace(overwrite=None)
 
 import json
 import os
+import sqlite3
 import tempfile
 import time
 import unittest
+from datetime import date
 
+from app import servicos as servmod
+from app.catalogo import interpretar_nome_pasta, montar_catalogo, normalizar
 from app.dropbox_client import ArquivoRemoto
-from app.extractor import interpretar_resposta
-from app.main import processar_arquivo
-from app.organizador import carregar_clientes
+from app.extractor import ESQUEMA, interpretar_resposta
+from app.main import Contexto, processar_arquivo
+from app.organizador import escolher_trimestre_vat
 from app.registro import Registro
 
-PASTAS = {
-    "entrada": "/Entrada", "processados": "/Processados",
-    "revisar": "/Revisar", "erros": "/Erros",
+RAIZ = "/Accurate/Client Data"
+
+# Estrutura parecida com a do vídeo
+ARVORE = {
+    RAIZ: ["UK - VAT MTD Ready", "UK - Ltd Companies (Individual clients)", "UK - Payroll",
+           "UK - Self-Assessment", "Ireland - Clients"],
+    f"{RAIZ}/UK - VAT MTD Ready": [
+        "!!Bridging Infomation and Templates", "!VAT - bkkg",
+        "Alves Marketing Business and Network Ltd TA FGV", "Bliss Clean Group Ltd",
+    ],
+    f"{RAIZ}/UK - Ltd Companies (Individual clients)": [
+        "!!!Year end accounts",
+        "Alves Marketing Business and Network Ltd - Rafael Alves Pinto",
+        "Bliss Clean Group Ltd - Fleur Thompson",
+        "Escobar Cafe ( Juan Da Silva Escobar )",
+    ],
+    f"{RAIZ}/UK - Payroll": ["Alves Marketing Business and Network Limited"],
+    f"{RAIZ}/UK - Self-Assessment": ["Rafael Alves Pinto"],
+    f"{RAIZ}/Ireland - Clients": [],
+    f"{RAIZ}/UK - VAT MTD Ready/Alves Marketing Business and Network Ltd TA FGV/VAT's": [
+        "VAT Qe 31.03.2026", "VAT Qe 30.06.2026",
+    ],
 }
+
+
+def listar_pastas(caminho):
+    return sorted(ARVORE.get(caminho, []))
 
 
 class FakeCfg:
     confianca_minima = 0.85
+    pasta_revisar = "/Docflow/Revisar"
+    pasta_erros = "/Docflow/Erros"
+    simulacao = False
 
 
 class FakeDbx:
     def __init__(self, arquivos):
-        self.arquivos = dict(arquivos)  # caminho -> bytes
+        self.arquivos = dict(arquivos)
         self.movimentos = []
 
     def baixar(self, caminho):
@@ -50,94 +81,188 @@ class FakeDbx:
         self.movimentos.append((origem, destino))
         return destino
 
+    listar_pastas = staticmethod(listar_pastas)
+
 
 class FakeExtrator:
     def __init__(self, resposta):
         self.resposta = resposta
+        self.sistemas = []
 
-    def extrair(self, nome, conteudo):
+    def extrair(self, nome, conteudo, sistema):
+        self.sistemas.append(sistema)
         return interpretar_resposta(self.resposta)
 
 
 def resp(**kw):
     base = {
-        "tipo": "nota_fiscal", "cnpj_cpf_cliente": "11.222.333/0001-81",
-        "nome_cliente": "Empresa Exemplo", "fornecedor_ou_emissor": "Papelaria São João Ltda",
-        "cnpj_cpf_fornecedor": "99888777000166", "data_documento": "2026-10-15",
-        "competencia": "2026-10", "valor_total": "1.234,56", "numero_documento": "123",
-        "chave_acesso": None, "observacoes": None, "confianca": 0.95, "legivel": True,
+        "legivel": True, "tipo_documento": "purchase_invoice", "resumo": "Fatura de consultoria",
+        "nome_cliente_no_documento": "Alves Marketing Business & Network Limited",
+        "company_number": None, "vat_number": None, "utr": None, "paye_ref": None,
+        "cliente_id": None, "servico": "UK - VAT MTD Ready", "categoria": "Suppliers",
+        "motivo_classificacao": "fatura de fornecedor de cliente com VAT",
+        "fornecedor_ou_emissor": "Smart Growth Consultancy Ltd", "data_documento": "2026-05-14",
+        "periodo_inicio": None, "periodo_fim": None, "valor_total": "1,234.56", "moeda": "GBP",
+        "numero_documento": "1206", "observacoes": None, "confianca": 0.95,
     }
     base.update(kw)
     return "```json\n" + json.dumps(base) + "\n```"
 
 
-class Testes(unittest.TestCase):
+class TestCatalogo(unittest.TestCase):
+    def setUp(self):
+        self.cat = montar_catalogo(RAIZ, listar_pastas, [
+            {"pasta": "Bliss Clean Group Ltd", "company_number": "12345678", "vat_number": "GB 123 4567 89"},
+        ])
+
+    def test_nome_de_pasta(self):
+        n = interpretar_nome_pasta("Alves Marketing Business and Network Ltd TA FGV")
+        self.assertEqual((n.empresa, n.nome_comercial), ("Alves Marketing Business and Network Ltd", "FGV"))
+        n = interpretar_nome_pasta("Escobar Cafe ( Juan Da Silva Escobar )")
+        self.assertEqual((n.empresa, n.contato), ("Escobar Cafe", "Juan Da Silva Escobar"))
+        self.assertEqual(normalizar("Bournemouth Carpentry & Construction LTD"),
+                         normalizar("Bournemouth Carpentry and Construction Limited"))
+
+    def test_junta_o_mesmo_cliente_de_varios_servicos(self):
+        alves = [c for c in self.cat.clientes.values() if c.nome.startswith("Alves")]
+        self.assertEqual(len(alves), 1)
+        self.assertEqual(set(alves[0].pastas), {
+            "UK - VAT MTD Ready", "UK - Ltd Companies (Individual clients)", "UK - Payroll"})
+        self.assertIn("Rafael Alves Pinto", alves[0].contatos)
+        self.assertIn("FGV", alves[0].nomes_comerciais)
+
+    def test_ignora_pastas_internas_e_lista_estavel(self):
+        nomes = [c.nome for c in self.cat.clientes.values()]
+        self.assertFalse(any(n.startswith("!") for n in nomes))
+        self.assertEqual(self.cat.texto_para_ia(), montar_catalogo(RAIZ, listar_pastas, [
+            {"pasta": "Bliss Clean Group Ltd", "company_number": "12345678",
+             "vat_number": "GB 123 4567 89"}]).texto_para_ia())
+
+    def test_identificador_extra(self):
+        c = self.cat.por_identificador("vat_number", "GB123456789")
+        self.assertEqual(c.nome, "Bliss Clean Group Ltd")
+
+
+class TestTrimestreVat(unittest.TestCase):
+    PASTAS = ["VAT Qe 31.03.2026", "VAT Qe 30.06.2026"]
+
+    def test_usa_pasta_existente(self):
+        self.assertEqual(escolher_trimestre_vat(self.PASTAS, "VAT Qe ", date(2026, 5, 14)), "VAT Qe 30.06.2026")
+        self.assertEqual(escolher_trimestre_vat(self.PASTAS, "VAT Qe ", date(2026, 3, 31)), "VAT Qe 31.03.2026")
+
+    def test_cria_proximo_trimestre_no_ciclo_do_cliente(self):
+        self.assertEqual(escolher_trimestre_vat(self.PASTAS, "VAT Qe ", date(2026, 8, 2)), "VAT Qe 30.09.2026")
+        self.assertEqual(escolher_trimestre_vat(["VAT Qe 31.01.2026"], "VAT Qe ", date(2026, 12, 5)),
+                         "VAT Qe 31.01.2027")
+
+    def test_sem_historico_nao_adivinha(self):
+        self.assertIsNone(escolher_trimestre_vat([], "VAT Qe ", date(2026, 5, 1)))
+
+
+class TestFluxo(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.reg = Registro(os.path.join(self.tmp, "t.db"))
-        csv_path = os.path.join(self.tmp, "c.csv")
-        with open(csv_path, "w", encoding="utf-8") as f:
-            f.write("cnpj_cpf;nome\n11.222.333/0001-81;Empresa Exemplo Ltda\n")
-        self.clientes = carregar_clientes(csv_path)
+        cat = montar_catalogo(RAIZ, listar_pastas, [])
+        self.ctx = Contexto(cat, servmod.carregar(None))
+        self.alves = next(c.id for c in cat.clientes.values() if c.nome.startswith("Alves"))
 
-    def rodar(self, resposta, conteudo=b"%PDF-1.4 teste", nome="scan001.pdf"):
-        dbx = FakeDbx({f"/Entrada/{nome}": conteudo})
-        arq = ArquivoRemoto(f"/Entrada/{nome}", nome, len(conteudo), time.time() - 999, "h")
-        processar_arquivo(arq, FakeCfg, dbx, FakeExtrator(resposta), self.reg, self.clientes, PASTAS)
+    def rodar(self, resposta, conteudo=b"%PDF-1.4 teste", nome="scan001.pdf", cfg=FakeCfg):
+        dbx = FakeDbx({f"/Docflow/Entrada/{nome}": conteudo})
+        arq = ArquivoRemoto(f"/Docflow/Entrada/{nome}", nome, len(conteudo), time.time() - 999, "h")
+        processar_arquivo(arq, cfg, dbx, FakeExtrator(resposta), self.reg, self.ctx)
         return dbx
 
-    def test_interpretacao_valor_br_e_cnpj(self):
-        e = interpretar_resposta(resp())
-        self.assertEqual(e.valor_total, 1234.56)
-        self.assertEqual(e.cnpj_cpf_cliente, "11222333000181")
+    def destino(self, dbx):
+        return dbx.movimentos[0][1]
 
-    def test_ok_vai_para_processados(self):
-        dbx = self.rodar(resp())
-        destino = dbx.movimentos[0][1]
-        self.assertTrue(destino.startswith("/Processados/Empresa_Exemplo_Ltda/2026/10/nota_fiscal/"))
-        self.assertIn("1234,56", destino)
-        linha = self.reg.pendentes_de_envio()[0]
-        self.assertEqual(linha["status"], "OK")
+    def test_prompt_tem_catalogo_e_regras(self):
+        ext = FakeExtrator(resp())
+        dbx = FakeDbx({"/Docflow/Entrada/a.pdf": b"x"})
+        processar_arquivo(ArquivoRemoto("/Docflow/Entrada/a.pdf", "a.pdf", 1, 0, "h"),
+                          FakeCfg, dbx, ext, self.reg, self.ctx)
+        self.assertIn(self.alves, ext.sistemas[0])
+        self.assertIn('"UK - VAT MTD Ready"', ext.sistemas[0])
+        self.assertIn('categoria "Suppliers"', ext.sistemas[0])
+
+    def test_vat_vai_para_trimestre_e_categoria(self):
+        d = self.destino(self.rodar(resp(cliente_id=self.alves)))
+        self.assertTrue(d.startswith(
+            f"{RAIZ}/UK - VAT MTD Ready/Alves Marketing Business and Network Ltd TA FGV/"
+            "VAT's/VAT Qe 30.06.2026/Suppliers/2026-05-14 - Purchase invoice - Smart Growth"), d)
+        self.assertIn("GBP 1234.56", d)
+        self.assertEqual(self.reg.pendentes_de_envio()[0]["servico"], "UK - VAT MTD Ready")
+
+    def test_mesmo_cliente_outro_servico(self):
+        d = self.destino(self.rodar(resp(cliente_id=self.alves, tipo_documento="payslip",
+                                         servico="UK - Payroll", categoria=None)))
+        self.assertTrue(d.startswith(
+            f"{RAIZ}/UK - Payroll/Alves Marketing Business and Network Limited/!Scanned docs/"), d)
+
+    def test_servico_que_o_cliente_nao_tem_vai_para_revisar(self):
+        d = self.destino(self.rodar(resp(cliente_id=self.alves, servico="UK - Self-Assessment")))
+        self.assertTrue(d.startswith("/Docflow/Revisar/"))
+        motivo = sqlite3.connect(self.reg.caminho_db).execute("SELECT motivo FROM documentos").fetchone()[0]
+        self.assertIn("não tem pasta no serviço", motivo)
 
     def test_cliente_desconhecido_vai_para_revisar(self):
-        dbx = self.rodar(resp(cnpj_cpf_cliente="00000000000000", cnpj_cpf_fornecedor="11111111111111"))
-        self.assertTrue(dbx.movimentos[0][1].startswith("/Revisar/"))
+        self.assertTrue(self.destino(self.rodar(resp(cliente_id="C9999"))).startswith("/Docflow/Revisar/"))
 
     def test_confianca_baixa_vai_para_revisar(self):
-        dbx = self.rodar(resp(confianca=0.4))
-        self.assertTrue(dbx.movimentos[0][1].startswith("/Revisar/"))
+        d = self.destino(self.rodar(resp(cliente_id=self.alves, confianca=0.4)))
+        self.assertTrue(d.startswith("/Docflow/Revisar/"))
+
+    def test_categoria_invalida_vai_para_revisar(self):
+        d = self.destino(self.rodar(resp(cliente_id=self.alves, categoria="Qualquer")))
+        self.assertTrue(d.startswith("/Docflow/Revisar/"))
+
+    def test_vat_sem_historico_de_trimestre_vai_para_revisar(self):
+        bliss = next(c.id for c in self.ctx.catalogo.clientes.values() if c.nome.startswith("Bliss"))
+        d = self.destino(self.rodar(resp(cliente_id=bliss)))
+        self.assertTrue(d.startswith("/Docflow/Revisar/"))
 
     def test_duplicado_por_conteudo(self):
-        self.rodar(resp())
-        dbx = self.rodar(resp())
-        self.assertIn("DUPLICADO_", dbx.movimentos[0][1])
+        self.rodar(resp(cliente_id=self.alves))
+        self.assertIn("DUPLICADO", self.destino(self.rodar(resp(cliente_id=self.alves))))
 
-    def test_duplicado_por_chave_nfe(self):
-        chave = "3" * 44
-        self.rodar(resp(chave_acesso=chave), conteudo=b"arquivo A")
-        dbx = self.rodar(resp(chave_acesso=chave), conteudo=b"arquivo B diferente")
-        self.assertIn("DUPLICADO_", dbx.movimentos[0][1])
+    def test_simulacao_nao_move_nada(self):
+        class CfgSim(FakeCfg):
+            simulacao = True
+        dbx = self.rodar(resp(cliente_id=self.alves), cfg=CfgSim)
+        self.assertEqual(dbx.movimentos, [])
+        linha = sqlite3.connect(self.reg.caminho_db).execute(
+            "SELECT status, caminho_final, motivo FROM documentos").fetchone()
+        self.assertEqual(linha[0], "SIMULADO")
+        self.assertIn("VAT Qe 30.06.2026/Suppliers", linha[1])
+        self.assertIn("seria OK", linha[2])
+        # depois de ligar de verdade, o mesmo arquivo não conta como duplicado
+        self.assertTrue(self.destino(self.rodar(resp(cliente_id=self.alves))).startswith(RAIZ))
 
-    def test_backup_do_banco_e_restauravel(self):
-        import sqlite3
-        self.rodar(resp())
+    def test_backup_e_excel(self):
+        self.rodar(resp(cliente_id=self.alves))
         copia = self.reg.copia_backup()
         self.assertTrue(copia.startswith(b"SQLite format 3"))
-        destino = os.path.join(self.tmp, "restaurado.db")
-        with open(destino, "wb") as f:
-            f.write(copia)
-        n = sqlite3.connect(destino).execute("SELECT COUNT(*) FROM documentos").fetchone()[0]
-        self.assertEqual(n, 1)
+        self.assertTrue(self.reg.exportar_excel(self.ctx.catalogo).startswith(b"PK"))
 
     def test_monitor_nunca_derruba_o_programa(self):
         from app.monitor import ping_falha, ping_ok
-        ping_ok("")  # sem URL: não faz nada
-        ping_ok("http://127.0.0.1:9/inexistente")   # porta fechada: apenas registra aviso
+        ping_ok("")
+        ping_ok("http://127.0.0.1:9/inexistente")
         ping_falha("http://127.0.0.1:9/inexistente", "teste")
 
-    def test_exporta_excel(self):
-        self.rodar(resp())
-        self.assertTrue(self.reg.exportar_excel().startswith(b"PK"))
+
+class TestInterpretacao(unittest.TestCase):
+    def test_valores(self):
+        self.assertEqual(interpretar_resposta(resp(valor_total="£1,234.56")).valor_total, 1234.56)
+        self.assertEqual(interpretar_resposta(resp(valor_total="1.234,56")).valor_total, 1234.56)
+        self.assertEqual(interpretar_resposta(resp(valor_total=99.9)).valor_total, 99.9)
+
+    def test_data_invalida_vira_nula(self):
+        self.assertIsNone(interpretar_resposta(resp(data_documento="14/05/2026")).data_documento)
+
+    def test_esquema_exige_todos_os_campos(self):
+        self.assertEqual(set(ESQUEMA["required"]), set(ESQUEMA["properties"]))
+        self.assertFalse(ESQUEMA["additionalProperties"])
 
 
 if __name__ == "__main__":

@@ -15,15 +15,17 @@ COLUNAS = [
     ("recebido_em", "Recebido em"),
     ("status", "Status"),
     ("cliente", "Cliente"),
-    ("cnpj_cpf_cliente", "CNPJ/CPF cliente"),
+    ("servico", "Serviço"),
+    ("categoria", "Categoria"),
     ("tipo", "Tipo"),
     ("data_documento", "Data documento"),
-    ("competencia", "Competência"),
     ("fornecedor", "Fornecedor/Emissor"),
     ("valor_total", "Valor"),
+    ("moeda", "Moeda"),
     ("numero_documento", "Nº documento"),
     ("confianca", "Confiança"),
     ("motivo", "Motivo (se pendente/erro)"),
+    ("resumo", "Resumo (IA)"),
     ("arquivo_original", "Arquivo original"),
     ("caminho_final", "Caminho final no Dropbox"),
     ("enviado_app_em", "Enviado ao aplicativo em"),
@@ -33,25 +35,25 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS documentos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recebido_em TEXT NOT NULL,
-    status TEXT NOT NULL,              -- OK | PENDENTE | ERRO | ENVIADO
+    status TEXT NOT NULL,              -- OK | PENDENTE | ERRO | ENVIADO | SIMULADO
     cliente TEXT,
-    cnpj_cpf_cliente TEXT,
+    servico TEXT,
+    categoria TEXT,
     tipo TEXT,
     data_documento TEXT,
-    competencia TEXT,
     fornecedor TEXT,
     valor_total REAL,
+    moeda TEXT,
     numero_documento TEXT,
-    chave_acesso TEXT,
     confianca REAL,
     motivo TEXT,
+    resumo TEXT,
     arquivo_original TEXT,
     caminho_final TEXT,
     hash_arquivo TEXT NOT NULL,
     enviado_app_em TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_hash ON documentos(hash_arquivo);
-CREATE INDEX IF NOT EXISTS ix_chave ON documentos(chave_acesso);
 CREATE INDEX IF NOT EXISTS ix_status ON documentos(status);
 """
 
@@ -76,21 +78,15 @@ class Registro:
         finally:
             conn.close()
 
-    def duplicado(self, hash_arquivo: str, chave_acesso: str | None = None) -> bool:
+    def duplicado(self, hash_arquivo: str) -> bool:
+        """Arquivo idêntico já processado (erros e simulações não contam)."""
         with self._conn() as c:
             r = c.execute(
-                "SELECT 1 FROM documentos WHERE hash_arquivo=? AND status != 'ERRO' LIMIT 1",
+                "SELECT 1 FROM documentos WHERE hash_arquivo=? "
+                "AND status NOT IN ('ERRO', 'SIMULADO') LIMIT 1",
                 (hash_arquivo,),
             ).fetchone()
-            if r:
-                return True
-            if chave_acesso:
-                r = c.execute(
-                    "SELECT 1 FROM documentos WHERE chave_acesso=? AND status != 'ERRO' LIMIT 1",
-                    (chave_acesso,),
-                ).fetchone()
-                return bool(r)
-        return False
+        return bool(r)
 
     def inserir(self, **campos) -> int:
         campos.setdefault("recebido_em", agora())
@@ -130,7 +126,7 @@ class Registro:
             with open(destino, "rb") as f:
                 return f.read()
 
-    def exportar_excel(self) -> bytes:
+    def exportar_excel(self, catalogo=None) -> bytes:
         with self._conn() as c:
             linhas = c.execute("SELECT * FROM documentos ORDER BY id DESC").fetchall()
         wb = Workbook()
@@ -140,7 +136,7 @@ class Registro:
         for cel in ws[1]:
             cel.font = Font(bold=True, color="FFFFFF")
             cel.fill = PatternFill("solid", fgColor="305496")
-        cores = {"PENDENTE": "FFF2CC", "ERRO": "F8CBAD", "ENVIADO": "E2EFDA"}
+        cores = {"PENDENTE": "FFF2CC", "ERRO": "F8CBAD", "ENVIADO": "E2EFDA", "SIMULADO": "DDEBF7"}
         for r in linhas:
             ws.append([r[chave] for chave, _ in COLUNAS])
             cor = cores.get(r["status"])
@@ -152,6 +148,24 @@ class Registro:
             ws.column_dimensions[get_column_letter(i)].width = min(largura + 6, 45)
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
+        if catalogo is not None:
+            _aba_clientes(wb, catalogo)
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
+
+
+def _aba_clientes(wb, catalogo) -> None:
+    """Aba para a equipe conferir como o programa juntou as pastas de cada cliente."""
+    ws = wb.create_sheet("Clientes")
+    ws.append(["Código", "Cliente", "Contato(s)", "Serviço", "Pasta no Dropbox"])
+    for cel in ws[1]:
+        cel.font = Font(bold=True, color="FFFFFF")
+        cel.fill = PatternFill("solid", fgColor="305496")
+    for c in catalogo.clientes.values():
+        for servico in sorted(c.pastas):
+            ws.append([c.id, c.nome, ", ".join(sorted(c.contatos)), servico, c.pastas[servico]])
+    for col, larg in zip("ABCDE", (9, 45, 35, 38, 90)):
+        ws.column_dimensions[col].width = larg
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import dropbox
 from dropbox.exceptions import ApiError
-from dropbox.files import FileMetadata, WriteMode
+from dropbox.files import FileMetadata, FolderMetadata, WriteMode
 
 log = logging.getLogger("docflow.dropbox")
 
@@ -20,12 +20,26 @@ class ArquivoRemoto:
 
 
 class DropboxClient:
-    def __init__(self, app_key: str, app_secret: str, refresh_token: str):
+    def __init__(self, app_key: str, app_secret: str, refresh_token: str, team_space: str = "auto"):
         self.dbx = dropbox.Dropbox(
             oauth2_refresh_token=refresh_token,
             app_key=app_key,
             app_secret=app_secret,
         )
+        if team_space != "off":
+            self._usar_espaco_da_equipe()
+
+    def _usar_espaco_da_equipe(self) -> None:
+        """Em contas Dropbox Business com "team space", as pastas da equipe (ex.: "!Accurate Complete
+        Accounting Ltd - data files") ficam fora da raiz pessoal do usuário. Aqui passamos a usar a raiz
+        da equipe, para os caminhos ficarem iguais aos que a equipe vê no Dropbox."""
+        from dropbox.common import PathRoot
+
+        conta = self.dbx.users_get_current_account()
+        raiz = conta.root_info
+        if raiz.root_namespace_id != raiz.home_namespace_id:
+            self.dbx = self.dbx.with_path_root(PathRoot.root(raiz.root_namespace_id))
+            log.info("Usando o espaço da equipe do Dropbox (namespace %s)", raiz.root_namespace_id)
 
     def garantir_pasta(self, caminho: str) -> None:
         try:
@@ -61,6 +75,22 @@ class DropboxClient:
             res = self.dbx.files_list_folder_continue(res.cursor)
         return itens
 
+    def listar_pastas(self, pasta: str) -> list[str]:
+        """Nomes das subpastas diretas (não recursivo). Pasta inexistente -> lista vazia."""
+        nomes: list[str] = []
+        try:
+            res = self.dbx.files_list_folder(pasta)
+        except ApiError as e:
+            if e.error.is_path() and e.error.get_path().is_not_found():
+                return []
+            raise
+        while True:
+            nomes += [e.name for e in res.entries if isinstance(e, FolderMetadata)]
+            if not res.has_more:
+                break
+            res = self.dbx.files_list_folder_continue(res.cursor)
+        return sorted(nomes)
+
     def estavel(self, arq: ArquivoRemoto, segundos: int) -> bool:
         """Arquivo só é processado se não foi modificado nos últimos N segundos
         (evita ler arquivo ainda sincronizando/escaneando)."""
@@ -73,7 +103,7 @@ class DropboxClient:
     def mover(self, origem: str, destino: str) -> str:
         """Move criando pastas; se já existir arquivo igual, acrescenta sufixo."""
         pasta_destino = destino.rsplit("/", 1)[0]
-        self._garantir_pasta_recursiva(pasta_destino)
+        self.garantir_pasta_recursiva(pasta_destino)
         final = destino
         tentativa = 1
         while True:
@@ -89,12 +119,10 @@ class DropboxClient:
                 raise
 
     def enviar(self, caminho: str, conteudo: bytes) -> None:
-        self._garantir_pasta_recursiva(caminho.rsplit("/", 1)[0])
+        # o upload já cria as pastas intermediárias
         self.dbx.files_upload(conteudo, caminho, mode=WriteMode.overwrite)
 
-    def _garantir_pasta_recursiva(self, caminho: str) -> None:
-        partes = [p for p in caminho.split("/") if p]
-        atual = ""
-        for parte in partes:
-            atual += "/" + parte
-            self.garantir_pasta(atual)
+    def garantir_pasta_recursiva(self, caminho: str) -> None:
+        # create_folder_v2 já cria as pastas intermediárias (1 chamada em vez de uma por nível)
+        if caminho.strip("/"):
+            self.garantir_pasta(caminho)
