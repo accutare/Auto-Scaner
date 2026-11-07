@@ -267,3 +267,51 @@ class TestInterpretacao(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMigracao(unittest.TestCase):
+    ARV = {
+        "/CD": ["!Old", "Brazil - Clients", "UK - !!!Compliance", "UK - Ltd Companies (Individual clients)",
+                "UK - Ltd Companies (Group clients)", "UK - VAT MTD Ready", "UK - VIP ONLY Clients"],
+        "/CD/UK - !!!Compliance": ["2 GET Ltd", "31 Burnaby Rd Management Ltd"],
+        "/CD/UK - Ltd Companies (Individual clients)": [
+            "2Get Ltd - Soraya", "31 Burnaby Road Management Ltd - John", "Alves Marketing Ltd - Rafael"],
+        "/CD/UK - Ltd Companies (Group clients)": ["Alves Marketing Limited"],
+        "/CD/UK - VAT MTD Ready": ["Alves Marketing Ltd TA FGV", "Bliss Clean Group Ltd"],
+        "/CD/UK - VIP ONLY Clients": [],
+        "/CD/Brazil - Clients": ["Padaria Pao Quente Ltda"],
+        "/CD/Brazil - Clients/x": [],
+        "/CD/UK - VAT MTD Ready/y": [],
+    }
+
+    def setUp(self):
+        from app.catalogo import montar_catalogo
+        self.cat = montar_catalogo("/CD", lambda p: sorted(self.ARV.get(p, [])), [])
+
+    def test_junta_espacos_e_abreviacoes(self):
+        from app.catalogo import chave_cliente
+        self.assertEqual(chave_cliente("2 GET Ltd"), chave_cliente("2Get Limited"))
+        self.assertEqual(chave_cliente("31 Burnaby Rd Management Ltd"),
+                         chave_cliente("31 Burnaby Road Management Ltd"))
+        nomes = sorted(c.nome for c in self.cat.clientes.values())
+        self.assertEqual(len(nomes), 5, nomes)
+
+    def test_plano(self):
+        from app.migracao import montar_plano
+        linhas = montar_plano(self.cat)
+        por_atual = {l.pasta_atual: l for l in linhas}
+        l = por_atual["/CD/UK - VAT MTD Ready/Alves Marketing Ltd TA FGV"]
+        self.assertEqual(l.pasta_nova, "/CD/Accurate UK/Alves Marketing Ltd/VAT")
+        l = por_atual["/CD/Brazil - Clients/Padaria Pao Quente Ltda"]
+        self.assertEqual(l.pasta_nova, "/CD/Accurate Brasil/Padaria Pao Quente Ltda/General")
+        # Individual + Group do mesmo cliente caem no mesmo destino: o segundo ganha (2) e um aviso
+        ltd = [x for x in linhas if x.cliente == "Alves Marketing Ltd" and "Ltd Company" in x.pasta_nova]
+        self.assertEqual(sorted(x.pasta_nova.endswith("(2)") for x in ltd), [False, True])
+        self.assertTrue(all(x.pasta_atual.startswith("/CD/") for x in linhas))
+        self.assertFalse(any("!Old" in x.pasta_atual for x in linhas))
+
+    def test_planilha_e_duplicados(self):
+        from app.migracao import gerar_planilha, montar_plano, possiveis_duplicados
+        pares = possiveis_duplicados(self.cat)
+        dados = gerar_planilha(self.cat, montar_plano(self.cat), pares)
+        self.assertTrue(dados.startswith(b"PK"))

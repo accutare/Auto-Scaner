@@ -30,6 +30,19 @@ def normalizar(texto: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+ABREVIACOES = {
+    "road": "rd", "street": "st", "avenue": "ave", "company": "co", "services": "svcs",
+    "service": "svc", "management": "mgmt", "international": "intl", "the": "",
+}
+
+
+def chave_cliente(nome: str) -> str:
+    """Chave para juntar as pastas do mesmo cliente: ignora espaços, pontuação e abreviações
+    comuns ("2 GET Ltd" = "2Get Ltd", "Burnaby Rd" = "Burnaby Road", "Limited" = "Ltd")."""
+    palavras = [ABREVIACOES.get(p, p) for p in normalizar(nome).split()]
+    return "".join(palavras)
+
+
 @dataclass
 class NomePasta:
     empresa: str           # parte principal (nome da empresa ou da pessoa)
@@ -66,6 +79,9 @@ class Cliente:
     pastas: dict[str, str] = field(default_factory=dict)
     identificadores: dict[str, str] = field(default_factory=dict)
     apelidos: set[str] = field(default_factory=set)
+    # todas as pastas do cliente, inclusive repetidas no mesmo serviço: (serviço, nome da pasta)
+    todas_pastas: list[tuple[str, str]] = field(default_factory=list)
+    variantes: dict[str, int] = field(default_factory=dict)  # nome escrito -> quantas pastas usam
 
 
 @dataclass
@@ -119,7 +135,7 @@ def montar_catalogo(raiz: str, listar_pastas, extras: list[dict] | None = None) 
             if pasta.startswith(PREFIXOS_IGNORADOS):
                 continue
             info = interpretar_nome_pasta(pasta)
-            chave = normalizar(info.empresa)
+            chave = chave_cliente(info.empresa)
             if not chave:
                 continue
             c = grupos.get(chave)
@@ -131,6 +147,13 @@ def montar_catalogo(raiz: str, listar_pastas, extras: list[dict] | None = None) 
                 c.nomes_comerciais.add(info.nome_comercial)
             # Se o mesmo cliente tiver 2 pastas no mesmo serviço, fica a primeira (ordem alfabética)
             c.pastas.setdefault(servico, f"{raiz}/{servico}/{pasta}")
+            c.todas_pastas.append((servico, pasta))
+            peso = 2 if "ltd compan" in servico.lower() else 1  # o nome da pasta de Ltd costuma ser o oficial
+            c.variantes[info.empresa] = c.variantes.get(info.empresa, 0) + peso
+
+    for c in grupos.values():
+        # nome exibido: o mais usado (Ltd Companies vale mais); empate -> o mais longo
+        c.nome = max(c.variantes, key=lambda n: (c.variantes[n], len(n), n))
 
     ordenados = sorted(grupos.values(), key=lambda c: c.chave)
     clientes: dict[str, Cliente] = {}
@@ -153,7 +176,7 @@ def montar_catalogo(raiz: str, listar_pastas, extras: list[dict] | None = None) 
 
 
 def _achar_por_nome(clientes: dict[str, Cliente], nome: str) -> Cliente | None:
-    chave = normalizar(interpretar_nome_pasta(nome).empresa)
+    chave = chave_cliente(interpretar_nome_pasta(nome).empresa)
     for c in clientes.values():
         if c.chave == chave:
             return c
