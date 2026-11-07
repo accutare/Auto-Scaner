@@ -7,7 +7,7 @@
 #   2. Pede o App key e o App secret do Dropbox, abre a autorização e gera o refresh token
 #   3. Testa o Dropbox e mostra em qual conta entrou
 #   4. Salva tudo no arquivo .env (só o root consegue ler)
-# Nenhuma chave aparece na tela.
+# As chaves aparecem na tela enquanto você cola (para conferir); não tire print dessa parte.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -37,10 +37,19 @@ json() {  # json <campo>  (lê JSON da entrada padrão)
 }
 
 echo
+echo "As chaves vão aparecer na tela enquanto você cola. Não tire print desta parte."
 echo "=== 1/2 Anthropic (IA) ==="
 while true; do
-  read -r -s -p "Cole a chave da API da Anthropic (começa com sk-ant-) e aperte Enter: " AKEY; echo
+  read -r -p "Cole a chave da API da Anthropic (começa com sk-ant-) e aperte Enter: " AKEY
   AKEY="$(echo "$AKEY" | tr -d '[:space:]')"
+  if [ -z "$AKEY" ]; then
+    echo "Nada foi colado. Copie a chave de novo e cole com Cmd+V (ou clique com o botão direito > Colar)."
+    continue
+  fi
+  case "$AKEY" in sk-ant-*) ;; *)
+    echo "Isso não parece a chave da Anthropic: ela começa com sk-ant-. Tente de novo."
+    continue ;;
+  esac
   CODIGO=$(curl -s -o /dev/null -w "%{http_code}" https://api.anthropic.com/v1/models \
     -H "x-api-key: $AKEY" -H "anthropic-version: 2023-06-01" || true)
   if [ "$CODIGO" = "200" ]; then
@@ -48,14 +57,18 @@ while true; do
     echo "OK: chave da Anthropic funcionando."
     break
   fi
-  echo "A chave não funcionou (resposta $CODIGO). Confira se copiou inteira e tente de novo."
+  case "$CODIGO" in
+    401) echo "A Anthropic recusou a chave (inválida ou incompleta). Copie de novo a chave inteira." ;;
+    000) echo "O servidor não conseguiu falar com a Anthropic (internet). Tente de novo em instantes." ;;
+    *)   echo "A chave não funcionou (resposta $CODIGO). Tente de novo." ;;
+  esac
 done
 
 echo
 echo "=== 2/2 Dropbox ==="
 read -r -p "Cole o App key do Dropbox e aperte Enter: " DKEY
 DKEY="$(echo "$DKEY" | tr -d '[:space:]')"
-read -r -s -p "Cole o App secret do Dropbox e aperte Enter: " DSECRET; echo
+read -r -p "Cole o App secret do Dropbox e aperte Enter: " DSECRET
 DSECRET="$(echo "$DSECRET" | tr -d '[:space:]')"
 
 while true; do
