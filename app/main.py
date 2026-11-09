@@ -3,7 +3,7 @@
 Uso:
   python -m app.main            fica ligado, olhando a pasta de entrada a cada minuto
   python -m app.main --uma-vez  processa o que estiver na pasta de entrada agora e termina (para testes)
-  python -m app.main --uma-vez --limite 1   idem, mas só o primeiro arquivo
+  python -m app.main --uma-vez --limite 1   idem, mas só o arquivo mais recente
 
 Com SIMULACAO=true nada é gravado no Dropbox: o resultado aparece só na tela.
 """
@@ -180,7 +180,11 @@ def main():
                 alterou = True
                 log.info("Catálogo: %d serviços, %d clientes", len(catalogo.servicos), len(catalogo.clientes))
 
-            for arq in dbx.listar(cfg.pasta_entrada):
+            arquivos = dbx.listar(cfg.pasta_entrada)
+            if limite is not None:
+                # Testes com limite: começa pelo arquivo mais recente (o que acabou de ser escaneado)
+                arquivos.sort(key=lambda a: a.modificado, reverse=True)
+            for arq in arquivos:
                 if _parar or (limite is not None and len(resultados) >= limite):
                     break
                 if not arq.nome.lower().endswith(EXTENSOES):
