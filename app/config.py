@@ -23,7 +23,8 @@ class Config:
     dropbox_team_space: str     # auto | off
 
     # Pastas dentro do Dropbox
-    pasta_client_data: str      # raiz dos clientes (pastas de serviço -> pastas de cliente)
+    pasta_client_data: str      # clientes de hoje (pastas de serviço -> pastas de cliente): só leitura
+    pasta_clientes: str         # onde a estrutura nova é criada: País/Cliente/Serviço/Tipo
     pasta_entrada: str          # onde o scanner salva
     pasta_revisar: str
     pasta_erros: str
@@ -60,7 +61,8 @@ def carregar() -> Config:
         pasta_client_data=_get(
             "PASTA_CLIENT_DATA", "/!Accurate Complete Accounting Ltd - data files/Client Data"
         ).rstrip("/"),
-        pasta_entrada=_get("PASTA_ENTRADA", "/Docflow/Entrada").rstrip("/"),
+        pasta_clientes=_get("PASTA_CLIENTES", "/Clientes - Teste").rstrip("/"),
+        pasta_entrada=_get("PASTA_ENTRADA", "/Scans").rstrip("/"),
         pasta_revisar=_get("PASTA_REVISAR", "/Docflow/Revisar").rstrip("/"),
         pasta_erros=_get("PASTA_ERROS", "/Docflow/Erros").rstrip("/"),
         pasta_controle=_get("PASTA_CONTROLE", "/Docflow/Controle").rstrip("/"),

@@ -1,83 +1,55 @@
 {
-  "_leia_me": "Regras que ensinam a IA para qual serviço cada documento vai. Edite as descrições à vontade (em português ou inglês). 'corresponde' liga a regra às pastas de serviço do Dropbox: vale para qualquer região (UK, Ireland, Brazil, Portugal...). 'subpasta' é onde o arquivo entra dentro da pasta do cliente; variáveis: {categoria}, {vat_qe}, {ano}, {mes}. Depois de editar, copie para a pasta dados/ do servidor (é relido a cada ciclo).",
+  "_leia_me": "Regras que ensinam a IA a organizar os documentos escaneados. Estrutura criada: <Pasta de clientes>/<País>/<Cliente>/<Serviço>/<Tipo de documento>/<arquivo>. Pode editar as descrições (português ou inglês) e os nomes das pastas. Depois de editar, copie para a pasta dados/ do servidor (é relido a cada ciclo).",
 
   "regras_gerais": [
-    "Um documento vai para UM serviço só. Escolha o serviço em que o documento será USADO primeiro pela equipe.",
-    "Se o cliente tem o serviço de VAT e o documento é uma venda, compra/despesa, extrato bancário ou relatório de salários dentro de um trimestre de VAT, escolha o serviço de VAT.",
-    "Se o cliente NÃO tem VAT, documentos de vendas, despesas e extratos de empresa limitada vão para Ltd Companies (fechamento anual).",
-    "Holerites, P60, P45, relatórios de folha, cartas de PAYE e pensão (auto-enrolment) vão para Payroll.",
-    "Documentos pessoais de pessoa física (renda, aluguel, juros, P60 pessoal, cartas da HMRC sobre Self Assessment/UTR) vão para Self-Assessment.",
-    "Passaporte, carteira de motorista, BRP e comprovante de endereço vão para Identity Verification.",
-    "Statements de CIS emitidos POR um empreiteiro para o cliente (o cliente sofreu dedução) vão para CIS Suffered; statements que o cliente emite para seus subcontratados vão para CIS Deducted.",
-    "Só escolha um serviço que aparece na lista de serviços daquele cliente no catálogo. Se o serviço certo não existir para o cliente, deixe servico como null e explique em motivo_classificacao."
+    "O cliente é quem contrata o escritório: em fatura de fornecedor é quem COMPRA; em fatura de venda é quem VENDE; em extrato é o titular da conta; em holerite é o empregador (a empresa).",
+    "Um documento vai para UM serviço só: o serviço em que a equipe vai USAR o documento primeiro.",
+    "Se o cliente tem VAT e o documento é uma venda, compra/despesa, extrato bancário ou relatório de salários, use VAT.",
+    "Se o cliente é empresa limitada sem VAT, vendas, despesas e extratos vão para Ltd Company - Year End.",
+    "Holerites, P60, P45, P11D, relatórios de folha, cartas de PAYE e pensão de funcionários vão para Payroll.",
+    "Documentos pessoais de uma pessoa física (rendimentos, aluguel recebido, juros, P60 pessoal, cartas da HMRC sobre Self Assessment ou UTR) vão para Self-Assessment, e o cliente é a PESSOA, não a empresa.",
+    "Passaporte, carteira de motorista, BRP e comprovante de endereço vão para Identity Verification, e o cliente é a pessoa do documento.",
+    "Statements de CIS recebidos de um empreiteiro (o cliente sofreu dedução) vão para CIS Suffered; os que o cliente emite para subcontratados vão para CIS Deducted.",
+    "País: use o país da empresa ou pessoa cliente (endereço, moeda, número de VAT GB/IE/PT, CNPJ/CPF do Brasil). Na dúvida entre países, deixe pais como null.",
+    "Nome do cliente: escreva o nome oficial completo como aparece no documento (ex.: 'Alves Marketing Business and Network Ltd'). Se o cliente estiver no catálogo, informe também o código dele."
   ],
 
-  "subpasta_padrao": "!Scanned docs",
+  "paises": {
+    "UK": "Accurate UK",
+    "Brasil": "Accurate Brasil",
+    "Irlanda": "Accurate Irlanda",
+    "Portugal": "Accurate Portugal"
+  },
 
   "servicos": [
-    {
-      "corresponde": ["VAT"],
-      "descricao": "Declaração trimestral de VAT (Making Tax Digital). Documentos do trimestre: faturas de venda, faturas/recibos de fornecedores e despesas, extratos bancários, relatórios de salários (wages journals) e o recibo de envio da declaração.",
-      "subpasta": "VAT's/VAT Qe {vat_qe}/{categoria}",
-      "categorias": {
-        "Sales": "faturas de venda emitidas pelo cliente, relatórios de vendas, recebimentos de clientes",
-        "Suppliers": "faturas e recibos de fornecedores, compras e despesas",
-        "Bank statements": "extratos bancários e de cartão",
-        "Wages Journals": "relatórios de folha de pagamento do período",
-        "VAT Submission receipt": "comprovante de envio da declaração de VAT, cálculo de VAT da HMRC"
-      }
-    },
-    {
-      "corresponde": ["Self-Assessment", "Self Assessment"],
-      "descricao": "Imposto de renda de pessoa física (Self Assessment / tax return). Rendimentos, P60 pessoal, aluguéis, juros, dividendos, cartas da HMRC sobre o tax return ou UTR."
-    },
-    {
-      "corresponde": ["Payroll"],
-      "descricao": "Folha de pagamento (PAYE): holerites, P60, P45, P11D, relatórios de folha, cartas da HMRC sobre PAYE, pensão de funcionários (auto-enrolment)."
-    },
-    {
-      "corresponde": ["Ltd Companies"],
-      "descricao": "Fechamento anual de empresa limitada (year end accounts, Corporation Tax/CT600, Confirmation Statement, Companies House). Documentos contábeis da empresa que não são do VAT."
-    },
-    {
-      "corresponde": ["Insolvency"],
-      "descricao": "Processos de insolvência/liquidação da empresa do cliente."
-    },
-    {
-      "corresponde": ["Identity Verif"],
-      "descricao": "Identificação do cliente (KYC/AML, GOV.UK One Login): passaporte, carteira de motorista, BRP, comprovante de endereço."
-    },
-    {
-      "corresponde": ["CIS Suffered"],
-      "descricao": "CIS sofrido: payment and deduction statements recebidos de empreiteiros que pagaram o cliente com retenção de CIS."
-    },
-    {
-      "corresponde": ["CIS Deducted"],
-      "descricao": "CIS retido: o cliente é empreiteiro e deduz CIS dos subcontratados; statements emitidos pelo cliente, CIS300, verificações de subcontratados."
-    },
-    {
-      "corresponde": ["Charities", "Bookkeeping"],
-      "descricao": "Clientes de bookkeeping ou instituições de caridade: lançamentos do dia a dia, vendas, despesas e extratos."
-    },
-    {
-      "corresponde": ["Annual Statements"],
-      "descricao": "Demonstrativos anuais enviados ao cliente (confirmar com a equipe quais documentos entram aqui)."
-    },
-    {
-      "corresponde": ["Compliance"],
-      "descricao": "Compliance do escritório (AML, contratos de prestação de serviço, cartas de engajamento)."
-    },
-    {
-      "corresponde": ["VIP"],
-      "descricao": "Clientes VIP: documentos gerais desses clientes quando não se encaixam em outro serviço."
-    },
-    {
-      "corresponde": ["Other Services"],
-      "descricao": "Outros serviços avulsos que não se encaixam nos demais."
-    },
-    {
-      "corresponde": ["Clients"],
-      "descricao": "Pasta geral de clientes de outro país (ex.: Ireland - Clients, Brazil - Clients): documentos desses clientes."
-    }
+    {"pasta": "VAT", "descricao": "Declaração de VAT (Making Tax Digital): vendas, compras/despesas, extratos e salários do período, recibo de envio da declaração."},
+    {"pasta": "Payroll", "descricao": "Folha de pagamento (PAYE): holerites, P60, P45, P11D, relatórios de folha, cartas de PAYE, pensão de funcionários."},
+    {"pasta": "Self-Assessment", "descricao": "Imposto de renda de pessoa física (tax return): rendimentos, aluguéis, juros, dividendos, cartas da HMRC sobre Self Assessment/UTR."},
+    {"pasta": "Ltd Company - Year End", "descricao": "Fechamento anual de empresa limitada: contas anuais, Corporation Tax/CT600, Confirmation Statement, Companies House, documentos contábeis fora do VAT."},
+    {"pasta": "CIS Suffered", "descricao": "CIS sofrido: statements recebidos de empreiteiros que pagaram o cliente com retenção."},
+    {"pasta": "CIS Deducted", "descricao": "CIS retido: o cliente é empreiteiro e deduz CIS dos subcontratados (CIS300, statements emitidos)."},
+    {"pasta": "Bookkeeping", "descricao": "Clientes só de bookkeeping ou instituições de caridade: lançamentos do dia a dia."},
+    {"pasta": "Identity Verification", "descricao": "Identificação do cliente (KYC/AML, GOV.UK One Login): passaporte, carteira de motorista, BRP, comprovante de endereço."},
+    {"pasta": "Insolvency", "descricao": "Processos de insolvência ou liquidação da empresa."},
+    {"pasta": "Other Services", "descricao": "Qualquer documento que não se encaixa nos serviços acima."}
+  ],
+
+  "tipos_documento": [
+    {"pasta": "Sales invoices", "arquivo": "Sales invoice", "descricao": "fatura ou recibo de venda emitido pelo cliente"},
+    {"pasta": "Purchase invoices", "arquivo": "Purchase invoice", "descricao": "fatura de fornecedor, compra ou despesa"},
+    {"pasta": "Receipts", "arquivo": "Receipt", "descricao": "recibo ou cupom de compra/despesa"},
+    {"pasta": "Bank statements", "arquivo": "Bank statement", "descricao": "extrato de banco ou cartão"},
+    {"pasta": "Payroll reports", "arquivo": "Payroll report", "descricao": "relatório de folha, wages journal"},
+    {"pasta": "Payslips", "arquivo": "Payslip", "descricao": "holerite de funcionário"},
+    {"pasta": "P60 P45 P11D", "arquivo": "P60-P45-P11D", "descricao": "formulários P60, P45 ou P11D"},
+    {"pasta": "HMRC letters", "arquivo": "HMRC letter", "descricao": "carta ou notificação da HMRC"},
+    {"pasta": "VAT returns", "arquivo": "VAT return", "descricao": "declaração de VAT ou comprovante de envio"},
+    {"pasta": "Companies House", "arquivo": "Companies House", "descricao": "documento da Companies House"},
+    {"pasta": "CIS statements", "arquivo": "CIS statement", "descricao": "payment and deduction statement de CIS"},
+    {"pasta": "ID documents", "arquivo": "ID document", "descricao": "passaporte, carteira de motorista, BRP"},
+    {"pasta": "Proof of address", "arquivo": "Proof of address", "descricao": "comprovante de endereço"},
+    {"pasta": "Pension", "arquivo": "Pension", "descricao": "documento de pensão"},
+    {"pasta": "Contracts", "arquivo": "Contract", "descricao": "contrato ou carta de engajamento"},
+    {"pasta": "Other documents", "arquivo": "Document", "descricao": "qualquer outro documento"}
   ]
 }

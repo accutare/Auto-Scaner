@@ -1,31 +1,23 @@
-"""Decide o destino do documento: valida a escolha da IA e monta o caminho dentro da pasta do cliente.
+"""Decide o destino do documento: valida a resposta da IA e monta o caminho na estrutura por cliente.
 
-Destino (OK):  <Client Data>/<Serviço>/<Pasta do cliente>/<subpasta do serviço>/<nome padronizado>
-  ex.: .../UK - VAT MTD Ready/Alves Marketing ... TA FGV/VAT's/VAT Qe 30.06.2026/Suppliers/2026-05-14 ...pdf
-Em qualquer dúvida, vai para a pasta de revisão com o motivo (e a sugestão da IA fica no Controle.xlsx).
-O programa nunca cria pasta de cliente nem de serviço: só subpastas dentro de uma pasta de cliente existente.
+Destino (OK):  <Pasta de clientes>/<País>/<Cliente>/<Serviço>/<Tipo de documento>/<nome padronizado>
+  ex.: /Clientes - Teste/Accurate UK/Alves Marketing Business and Network Ltd/VAT/Purchase invoices/
+       2026-05-14 - Purchase invoice - Smart Growth Consultancy Ltd - 1206 - GBP 250.00 [a1b2c3d4].pdf
+
+O nome da pasta do cliente é sempre o mesmo para o mesmo cliente: se ele já existe no Client Data de hoje,
+usa aquele nome; se já existe uma pasta dele na estrutura nova, reaproveita a pasta. Em qualquer dúvida, o
+documento vai para a pasta de revisão com o motivo (e a sugestão da IA fica no Controle.xlsx).
 """
-import calendar
 import os
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import date
 
-from .catalogo import Catalogo, Cliente
+from .catalogo import Catalogo, Cliente, chave_cliente
 from .extractor import Extracao
 from .servicos import Regras
 
-NOMES_TIPO = {
-    "sales_invoice": "Sales invoice", "purchase_invoice": "Purchase invoice", "receipt": "Receipt",
-    "bank_statement": "Bank statement", "payroll_report": "Payroll report", "payslip": "Payslip",
-    "hmrc_letter": "HMRC letter", "vat_return": "VAT return", "companies_house": "Companies House",
-    "cis_statement": "CIS statement", "id_document": "ID document",
-    "proof_of_address": "Proof of address", "pension": "Pension", "contract": "Contract",
-    "other": "Document",
-}
-
-RE_QE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")
+PROIBIDOS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def limpar_nome(texto: str, limite: int = 60) -> str:
@@ -36,90 +28,26 @@ def limpar_nome(texto: str, limite: int = 60) -> str:
     return t[:limite].strip() or "sem nome"
 
 
+def nome_pasta(texto: str, limite: int = 120) -> str:
+    """Nome de pasta: mantém acentos e pontuação comum, tira só o que o Dropbox não aceita."""
+    t = PROIBIDOS.sub(" ", texto or "")
+    t = re.sub(r"\s+", " ", t).strip(" .")
+    return t[:limite].strip(" .")
+
+
 @dataclass
 class Decisao:
     status: str                 # OK | PENDENTE
     caminho_destino: str
     cliente: str | None
     servico: str | None
-    categoria: str | None
-    motivo: str | None
+    tipo: str | None
+    pais: str | None
+    motivo: str | None          # se PENDENTE: por quê; se OK: avisos (ex.: cliente novo)
 
 
-def _fim_do_mes(ano: int, mes: int) -> date:
-    return date(ano, mes, calendar.monthrange(ano, mes)[1])
-
-
-def escolher_trimestre_vat(pastas_existentes: list[str], prefixo: str, data_ref: date) -> str | None:
-    """Escolhe o nome da pasta "VAT Qe dd.mm.aaaa" do trimestre que contém data_ref.
-
-    O ciclo de trimestres do cliente (stagger) é deduzido das pastas que ele já tem. Se a pasta do
-    trimestre já existe, devolve o nome exato dela; se não, devolve o nome novo no mesmo formato.
-    Sem nenhuma pasta anterior não dá para saber o ciclo: devolve None (vai para revisão)."""
-    existentes: dict[date, str] = {}
-    for nome in pastas_existentes:
-        if not nome.lower().startswith(prefixo.lower()):
-            continue
-        m = RE_QE.search(nome[len(prefixo):])
-        if m:
-            try:
-                existentes[date(int(m.group(3)), int(m.group(2)), int(m.group(1)))] = nome
-            except ValueError:
-                continue
-    if not existentes:
-        return None
-    mes_base = next(iter(existentes)).month
-    # primeiro fim de mês, a partir do mês de data_ref, que cai no ciclo do cliente
-    ano, mes = data_ref.year, data_ref.month
-    while (mes - mes_base) % 3 != 0:
-        mes += 1
-        if mes > 12:
-            mes, ano = 1, ano + 1
-    alvo = _fim_do_mes(ano, mes)
-    for d, nome in existentes.items():
-        if d == alvo or (d.year == alvo.year and d.month == alvo.month):
-            return nome
-    return f"{prefixo}{alvo:%d.%m.%Y}"
-
-
-def _data_ref(ext: Extracao) -> date | None:
-    for v in (ext.periodo_fim, ext.data_documento):
-        if v:
-            try:
-                return date.fromisoformat(v)
-            except ValueError:
-                pass
-    return None
-
-
-def montar_subpasta(modelo: str, pasta_cliente: str, ext: Extracao, categoria: str | None,
-                    listar_pastas) -> tuple[str | None, str | None]:
-    """Resolve as variáveis do modelo de subpasta. Devolve (subpasta, motivo_se_falhou)."""
-    d = _data_ref(ext)
-    sub = modelo
-    if "{vat_qe}" in sub:
-        if not d:
-            return None, "sem data para escolher o trimestre de VAT"
-        antes = sub.split("{vat_qe}")[0]                 # "VAT's/VAT Qe "
-        pai, _, prefixo = antes.rpartition("/")          # "VAT's", "VAT Qe "
-        base = f"{pasta_cliente}/{pai}" if pai else pasta_cliente
-        nome_qe = escolher_trimestre_vat(listar_pastas(base), prefixo, d)
-        if not nome_qe:
-            return None, f"cliente sem pastas '{prefixo.strip()}' em '{pai}' para deduzir o trimestre de VAT"
-        sub = (f"{pai}/" if pai else "") + nome_qe + sub.split("{vat_qe}", 1)[1]
-    if "{categoria}" in sub:
-        if not categoria:
-            return None, "categoria não identificada"
-        sub = sub.replace("{categoria}", categoria)
-    if "{ano}" in sub or "{mes}" in sub:
-        if not d:
-            return None, "sem data para montar a pasta"
-        sub = sub.replace("{ano}", f"{d.year}").replace("{mes}", f"{d.month:02d}")
-    return sub.strip("/"), None
-
-
-def nome_arquivo(ext: Extracao, extensao: str, hash_curto: str) -> str:
-    partes = [ext.data_documento or "sem data", NOMES_TIPO.get(ext.tipo, "Document")]
+def nome_arquivo(ext: Extracao, rotulo: str, extensao: str, hash_curto: str) -> str:
+    partes = [ext.data_documento or "sem data", rotulo]
     if ext.fornecedor_ou_emissor:
         partes.append(limpar_nome(ext.fornecedor_ou_emissor, 40))
     if ext.numero_documento:
@@ -130,7 +58,7 @@ def nome_arquivo(ext: Extracao, extensao: str, hash_curto: str) -> str:
 
 
 def identificar_cliente(ext: Extracao, cat: Catalogo) -> tuple[Cliente | None, str | None]:
-    """Cliente escolhido pela IA, conferido com os números (Company/VAT/UTR/PAYE) do clientes_extra.csv."""
+    """Cliente da lista atual escolhido pela IA, conferido com os números (Company/VAT/UTR/PAYE)."""
     escolhido = cat.por_id(ext.cliente_id)
     por_numero = None
     for tipo in ("company_number", "vat_number", "utr", "paye_ref"):
@@ -143,12 +71,11 @@ def identificar_cliente(ext: Extracao, cat: Catalogo) -> tuple[Cliente | None, s
     return escolhido or por_numero, None
 
 
-def decidir(ext: Extracao, nome_original: str, cat: Catalogo, regras: Regras,
-            confianca_minima: float, pasta_revisar: str, hash_curto: str, listar_pastas) -> Decisao:
+def decidir(ext: Extracao, nome_original: str, cat: Catalogo, regras: Regras, confianca_minima: float,
+            pasta_clientes: str, pasta_revisar: str, hash_curto: str, listar_pastas) -> Decisao:
     extensao = os.path.splitext(nome_original)[1].lower() or ".pdf"
-    cliente, conflito = identificar_cliente(ext, cat)
-    servico = ext.servico
-    categoria = ext.categoria
+    cliente_atual, conflito = identificar_cliente(ext, cat)
+    pasta_pais = regras.paises.get(ext.pais or "")
 
     motivos = []
     if ext.recusado:
@@ -159,28 +86,35 @@ def decidir(ext: Extracao, nome_original: str, cat: Catalogo, regras: Regras,
         motivos.append(f"confiança baixa ({ext.confianca:.2f})")
     if conflito:
         motivos.append(conflito)
-    elif not cliente:
+    if not pasta_pais:
+        motivos.append("país não identificado")
+    nome_cli = nome_pasta(cliente_atual.nome if cliente_atual else (ext.nome_cliente or ""))
+    if not nome_cli:
         motivos.append("cliente não identificado")
-    if not servico:
-        motivos.append("serviço não definido")
-    elif cliente and servico not in cliente.pastas:
-        motivos.append(f"o cliente não tem pasta no serviço '{servico}'")
-    cats = regras.categorias(servico or "")
-    if categoria and cats and categoria not in cats:
-        categoria = None
+    if ext.servico not in regras.nomes_servicos:
+        motivos.append("serviço não identificado")
+    if ext.tipo_documento not in regras.nomes_tipos:
+        motivos.append("tipo de documento não identificado")
 
-    sub = None
-    if not motivos:
-        pasta_cliente = cliente.pastas[servico]
-        sub, erro = montar_subpasta(regras.subpasta(servico), pasta_cliente, ext, categoria, listar_pastas)
-        if erro:
-            motivos.append(erro)
-
-    nome_final = nome_arquivo(ext, extensao, hash_curto)
+    rotulo = regras.rotulo_tipo(ext.tipo_documento)
+    arquivo = nome_arquivo(ext, rotulo, extensao, hash_curto)
     if motivos:
         if ext.motivo_classificacao:
             motivos.append(f"IA: {ext.motivo_classificacao}")
-        return Decisao("PENDENTE", f"{pasta_revisar}/{nome_final}",
-                       cliente.nome if cliente else None, servico, categoria, "; ".join(motivos))
-    destino = f"{cliente.pastas[servico]}/{sub}/{nome_final}" if sub else f"{cliente.pastas[servico]}/{nome_final}"
-    return Decisao("OK", destino, cliente.nome, servico, categoria, None)
+        return Decisao("PENDENTE", f"{pasta_revisar}/{arquivo}", nome_cli or None, ext.servico,
+                       ext.tipo_documento, ext.pais, "; ".join(motivos))
+
+    # Reaproveita a pasta do cliente se ela já existe na estrutura nova (mesmo nome escrito diferente)
+    base_pais = f"{pasta_clientes}/{pasta_pais}"
+    chave = chave_cliente(nome_cli)
+    for existente in listar_pastas(base_pais):
+        if chave_cliente(existente) == chave:
+            nome_cli = existente
+            break
+    else:
+        if not cliente_atual:
+            aviso = "cliente novo (não está no Client Data de hoje): confira o nome da pasta"
+            return Decisao("OK", f"{base_pais}/{nome_cli}/{ext.servico}/{ext.tipo_documento}/{arquivo}",
+                           nome_cli, ext.servico, ext.tipo_documento, ext.pais, aviso)
+    return Decisao("OK", f"{base_pais}/{nome_cli}/{ext.servico}/{ext.tipo_documento}/{arquivo}",
+                   nome_cli, ext.servico, ext.tipo_documento, ext.pais, None)

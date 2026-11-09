@@ -1,49 +1,45 @@
-"""Regras por serviço (servicos.json): descrição para a IA e subpasta de destino."""
+"""Regras do escritório (servicos.json): países, serviços e tipos de documento que viram pastas."""
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 PADRAO_REPO = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "servicos.json")
 
 
 @dataclass
-class RegraServico:
-    corresponde: list[str]
+class Item:
+    pasta: str
     descricao: str
-    subpasta: str | None = None
-    categorias: dict[str, str] = field(default_factory=dict)
+    arquivo: str = ""   # rótulo usado no nome do arquivo (tipos de documento)
 
 
 @dataclass
 class Regras:
     regras_gerais: list[str]
-    subpasta_padrao: str
-    servicos: list[RegraServico]
+    paises: dict[str, str]          # código usado pela IA -> nome da pasta do país
+    servicos: list[Item]
+    tipos: list[Item]
 
-    def para(self, pasta_servico: str) -> RegraServico | None:
-        """Primeira regra cujo termo aparece no nome do serviço (parte depois de 'UK - ')."""
-        nome = pasta_servico.split(" - ", 1)[-1].lower()
-        for r in self.servicos:
-            if any(t.lower() in nome for t in r.corresponde):
-                return r
-        return None
+    @property
+    def nomes_servicos(self) -> list[str]:
+        return [s.pasta for s in self.servicos]
 
-    def subpasta(self, pasta_servico: str) -> str:
-        r = self.para(pasta_servico)
-        return (r.subpasta if r and r.subpasta else self.subpasta_padrao).strip("/")
+    @property
+    def nomes_tipos(self) -> list[str]:
+        return [t.pasta for t in self.tipos]
 
-    def categorias(self, pasta_servico: str) -> dict[str, str]:
-        r = self.para(pasta_servico)
-        return dict(r.categorias) if r else {}
+    def rotulo_tipo(self, pasta_tipo: str | None) -> str:
+        for t in self.tipos:
+            if t.pasta == pasta_tipo:
+                return t.arquivo or t.pasta
+        return "Document"
 
-    def texto_para_ia(self, servicos_existentes: list[str]) -> str:
-        linhas = []
-        for s in servicos_existentes:
-            r = self.para(s)
-            desc = r.descricao if r else "(sem descrição: só escolha se for óbvio)"
-            linhas.append(f'- "{s}": {desc}')
-            for cat, cdesc in (r.categorias.items() if r else []):
-                linhas.append(f'    categoria "{cat}": {cdesc}')
+    def texto_para_ia(self) -> str:
+        linhas = ["Países (use o código em \"pais\"): " + ", ".join(self.paises)]
+        linhas.append("\nServiços (use o nome exato em \"servico\"):")
+        linhas += [f'- "{s.pasta}": {s.descricao}' for s in self.servicos]
+        linhas.append("\nTipos de documento (use o nome exato em \"tipo_documento\"):")
+        linhas += [f'- "{t.pasta}": {t.descricao}' for t in self.tipos]
         return "\n".join(linhas)
 
 
@@ -54,14 +50,7 @@ def carregar(caminho: str | None) -> Regras:
         d = json.load(f)
     return Regras(
         regras_gerais=list(d.get("regras_gerais", [])),
-        subpasta_padrao=d.get("subpasta_padrao") or "!Scanned docs",
-        servicos=[
-            RegraServico(
-                corresponde=list(s.get("corresponde", [])),
-                descricao=s.get("descricao", ""),
-                subpasta=s.get("subpasta"),
-                categorias=dict(s.get("categorias", {})),
-            )
-            for s in d.get("servicos", [])
-        ],
+        paises=dict(d.get("paises", {})),
+        servicos=[Item(s["pasta"], s.get("descricao", "")) for s in d.get("servicos", [])],
+        tipos=[Item(t["pasta"], t.get("descricao", ""), t.get("arquivo", "")) for t in d.get("tipos_documento", [])],
     )
