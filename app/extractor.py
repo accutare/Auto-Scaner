@@ -6,6 +6,7 @@ A IA recebe:
   - o documento (PDF ou imagem).
 e devolve um JSON com formato garantido (structured outputs). A lista vai no prompt de sistema com
 cache, então só a primeira leitura de cada lote paga a lista inteira.
+Se o serviço recusar o formato do pedido (erro 400), tenta automaticamente formas mais simples.
 """
 import base64
 import json
@@ -34,41 +35,48 @@ sobre o conjunto cliente + país + serviço + tipo + dados lidos. Datas no forma
 Unido 05/06/2026 é 5 de junho). valor_total como número (ex.: 1234.56), moeda como código ISO (GBP, EUR, BRL)."""
 
 
-def _nulo(tipo: str) -> dict:
-    return {"anyOf": [{"type": tipo}, {"type": "null"}]}
-
-
-def _enum_nulo(valores: list[str]) -> dict:
-    return {"anyOf": [{"type": "string", "enum": list(valores)}, {"type": "null"}]}
-
-
 def montar_esquema(paises: list[str], servicos: list[str], tipos: list[str]) -> dict:
+    """Formato da resposta. Mantido simples de propósito (sem campos opcionais nem "anyOf"):
+    texto vazio "" quer dizer "não sei / não aparece no documento"."""
+    texto = {"type": "string"}
     props = {
         "legivel": {"type": "boolean"},
-        "resumo": {"type": "string"},
-        "pais": _enum_nulo(paises),
+        "resumo": texto,
+        "pais": {"type": "string", "enum": list(paises) + [""]},
         "tipo_cliente": {"type": "string", "enum": ["empresa", "pessoa"]},
-        "cliente_id": _nulo("string"),
-        "nome_cliente": _nulo("string"),
-        "dono_ou_diretor": _nulo("string"),
-        "company_number": _nulo("string"),
-        "vat_number": _nulo("string"),
-        "utr": _nulo("string"),
-        "paye_ref": _nulo("string"),
-        "servico": _enum_nulo(servicos),
-        "tipo_documento": _enum_nulo(tipos),
-        "motivo_classificacao": {"type": "string"},
-        "fornecedor_ou_emissor": _nulo("string"),
-        "data_documento": _nulo("string"),
-        "periodo_inicio": _nulo("string"),
-        "periodo_fim": _nulo("string"),
-        "valor_total": _nulo("number"),
-        "moeda": _nulo("string"),
-        "numero_documento": _nulo("string"),
-        "observacoes": _nulo("string"),
+        "cliente_id": texto,
+        "nome_cliente": texto,
+        "dono_ou_diretor": texto,
+        "company_number": texto,
+        "vat_number": texto,
+        "utr": texto,
+        "paye_ref": texto,
+        "servico": {"type": "string", "enum": list(servicos) + [""]},
+        "tipo_documento": {"type": "string", "enum": list(tipos) + [""]},
+        "motivo_classificacao": texto,
+        "fornecedor_ou_emissor": texto,
+        "data_documento": texto,
+        "periodo_inicio": texto,
+        "periodo_fim": texto,
+        "valor_total": texto,
+        "moeda": texto,
+        "numero_documento": texto,
+        "observacoes": texto,
         "confianca": {"type": "number"},
     }
     return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
+
+
+def instrucao_formato(esquema: dict) -> str:
+    """Usada no plano B (sem formato garantido): descreve o JSON esperado no próprio texto."""
+    linhas = []
+    for k, v in esquema["properties"].items():
+        if "enum" in v:
+            linhas.append(f'  "{k}": um de {json.dumps(v["enum"], ensure_ascii=False)}')
+        else:
+            linhas.append(f'  "{k}": {v["type"]}')
+    return ("Responda APENAS com um objeto JSON, sem texto antes ou depois, com exatamente estes campos "
+            "(use \"\" quando não souber):\n{\n" + ",\n".join(linhas) + "\n}")
 
 
 @dataclass
@@ -202,25 +210,41 @@ class Extrator:
         bloco_tipo, media = _media_type(nome)
         b64 = base64.standard_b64encode(conteudo).decode()
         bloco = {"type": bloco_tipo, "source": {"type": "base64", "media_type": media, "data": b64}}
-        resp = self.client.beta.messages.create(
-            model=self.modelo,
-            max_tokens=16000,
-            # Se o filtro de segurança recusar, a própria API tenta de novo com o modelo indicado por ela
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            system=[{"type": "text", "text": sistema, "cache_control": {"type": "ephemeral"}}],
-            output_config={"effort": self.esforco, "format": {"type": "json_schema", "schema": esquema}},
-            messages=[{
-                "role": "user",
-                "content": [bloco, {"type": "text", "text": f"Arquivo: {nome}. Classifique este documento."}],
-            }],
-        )
-        u = resp.usage
-        log.info("IA: entrada=%s cache_lido=%s saída=%s", u.input_tokens,
-                 getattr(u, "cache_read_input_tokens", None), u.output_tokens)
-        if resp.stop_reason == "refusal":
-            return Extracao(recusado=True, motivo_classificacao="a IA recusou ler o documento")
-        if resp.stop_reason == "max_tokens":
-            raise RuntimeError("resposta da IA cortada (max_tokens)")
-        texto = "".join(b.text for b in resp.content if b.type == "text")
-        return interpretar_resposta(texto)
+        pedido = f"Arquivo: {nome}. Classifique este documento."
+
+        # Plano A: formato de resposta garantido. Se o serviço recusar o pedido (erro 400),
+        # tenta formas mais simples antes de desistir, e guarda a mensagem completa de cada recusa.
+        tentativas = [
+            ("formato+esforco", {"output_config": {"effort": self.esforco,
+                                                   "format": {"type": "json_schema", "schema": esquema}}}, pedido),
+            ("formato", {"output_config": {"format": {"type": "json_schema", "schema": esquema}}}, pedido),
+            ("texto", {}, pedido + "\n\n" + instrucao_formato(esquema)),
+        ]
+        recusas = []
+        for modo, extra, texto_pedido in tentativas:
+            try:
+                resp = self.client.messages.create(
+                    model=self.modelo,
+                    max_tokens=16000,
+                    system=[{"type": "text", "text": sistema, "cache_control": {"type": "ephemeral"}}],
+                    messages=[{"role": "user", "content": [bloco, {"type": "text", "text": texto_pedido}]}],
+                    **extra,
+                )
+            except anthropic.BadRequestError as e:
+                recusas.append(f"[{modo}] {e}")
+                log.warning("A IA recusou o pedido no modo %s: %s", modo, e)
+                continue
+            u = resp.usage
+            log.info("IA (%s): entrada=%s cache_lido=%s saída=%s", modo, u.input_tokens,
+                     getattr(u, "cache_read_input_tokens", None), u.output_tokens)
+            if resp.stop_reason == "refusal":
+                return Extracao(recusado=True, motivo_classificacao="a IA recusou ler o documento")
+            if resp.stop_reason == "max_tokens":
+                raise RuntimeError("resposta da IA cortada (max_tokens)")
+            texto = "".join(b.text for b in resp.content if b.type == "text")
+            ext = interpretar_resposta(texto)
+            ext.bruto["_modo"] = modo
+            if recusas:
+                ext.observacoes = ((ext.observacoes or "") + f" [lido no modo {modo}]").strip()
+            return ext
+        raise RuntimeError("o serviço da IA recusou todos os formatos de pedido: " + " || ".join(recusas))

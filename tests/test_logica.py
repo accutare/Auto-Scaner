@@ -171,7 +171,8 @@ class TestFluxo(unittest.TestCase):
         sistema, esquema = self.extrator.chamadas[0]
         self.assertIn(self.alves, sistema)
         self.assertIn('"Purchase invoices"', sistema)
-        self.assertIn("VAT", esquema["properties"]["servico"]["anyOf"][0]["enum"])
+        self.assertIn("VAT", esquema["properties"]["servico"]["enum"])
+        self.assertNotIn("anyOf", json.dumps(esquema))
         self.assertEqual(set(esquema["required"]), set(esquema["properties"]))
 
     def test_cliente_conhecido_usa_o_nome_de_hoje(self):

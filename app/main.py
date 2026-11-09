@@ -98,7 +98,7 @@ def mover_para_erros(arq, cfg, dbx, registro, motivo):
     registro.inserir(
         status="SIMULADO" if cfg.simulacao else "ERRO", arquivo_original=arq.nome,
         caminho_final=final, caminho_original=arq.caminho, hash_arquivo=hash_arq,
-        motivo=f"erro técnico: {motivo[:500]}",
+        motivo=f"erro técnico: {motivo[:3000]}",
     )
 
 
