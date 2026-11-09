@@ -165,7 +165,7 @@ def montar_catalogo(raiz: str, listar_pastas, extras: list[dict] | None = None) 
         alvo = _achar_por_nome(clientes, linha.get("pasta") or "")
         if not alvo:
             continue
-        for k in ("company_number", "vat_number", "utr", "paye_ref"):
+        for k in ("company_number", "vat_number", "utr", "paye_ref", "year_end"):
             v = (linha.get(k) or "").strip()
             if v:
                 alvo.identificadores[k] = v
@@ -184,7 +184,8 @@ def _achar_por_nome(clientes: dict[str, Cliente], nome: str) -> Cliente | None:
 
 
 def carregar_extras(caminho_csv: str) -> list[dict]:
-    """clientes_extra.csv (opcional): pasta;company_number;vat_number;utr;paye_ref;apelidos
+    """clientes_extra.csv (opcional): pasta;company_number;vat_number;utr;paye_ref;year_end;apelidos
+    year_end = dia/mês do fim do ano fiscal da empresa (ex.: 31/12). Sem ele, vale o padrão do servicos.json.
     'pasta' é o nome de qualquer pasta do cliente no Dropbox. Ajuda a IA a reconhecer o cliente
     por número (Companies House, VAT, UTR, PAYE) quando o nome no documento é diferente."""
     if not caminho_csv or not os.path.exists(caminho_csv):

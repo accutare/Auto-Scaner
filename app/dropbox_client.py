@@ -119,6 +119,16 @@ class DropboxClient:
                 return False
             raise
 
+    def hash_de(self, caminho: str) -> str | None:
+        """content_hash do arquivo (igual para arquivos idênticos); None se não existir."""
+        try:
+            meta = self.dbx.files_get_metadata(caminho)
+        except ApiError as e:
+            if e.error.is_path() and e.error.get_path().is_not_found():
+                return None
+            raise
+        return getattr(meta, "content_hash", None)
+
     def apagar(self, caminho: str) -> None:
         """Manda para a lixeira do Dropbox (recuperável); nunca apaga permanentemente."""
         self.dbx.files_delete_v2(caminho)

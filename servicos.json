@@ -1,55 +1,63 @@
 {
-  "_leia_me": "Regras que ensinam a IA a organizar os documentos escaneados. Estrutura criada: <Pasta de clientes>/<País>/<Cliente>/<Serviço>/<Tipo de documento>/<arquivo>. Pode editar as descrições (português ou inglês) e os nomes das pastas. Depois de editar, copie para a pasta dados/ do servidor (é relido a cada ciclo).",
+  "_leia_me": "Regras que ensinam a IA a organizar os documentos escaneados. Estrutura criada: <Pasta de clientes>/<País>/<Cliente>/<PREFIXO> - <Serviço>/[subpasta]/<arquivo com o nome original>. Toda empresa recebe todas as pastas de serviço (mesmo vazias). Tudo em inglês. Depois de editar, envie para o GitHub: o servidor aplica sozinho.",
 
   "regras_gerais": [
-    "O cliente é quem contrata o escritório: em fatura de fornecedor é quem COMPRA; em fatura de venda é quem VENDE; em extrato é o titular da conta; em holerite é o empregador (a empresa).",
-    "Um documento vai para UM serviço só: o serviço em que a equipe vai USAR o documento primeiro.",
-    "Se o cliente tem VAT e o documento é uma venda, compra/despesa, extrato bancário ou relatório de salários, use VAT.",
-    "Se o cliente é empresa limitada sem VAT, vendas, despesas e extratos vão para Ltd Company - Year End.",
-    "Holerites, P60, P45, P11D, relatórios de folha, cartas de PAYE e pensão de funcionários vão para Payroll.",
-    "Documentos pessoais de uma pessoa física (rendimentos, aluguel recebido, juros, P60 pessoal, cartas da HMRC sobre Self Assessment ou UTR) vão para Self-Assessment, e o cliente é a PESSOA, não a empresa.",
-    "Passaporte, carteira de motorista, BRP e comprovante de endereço vão para Identity Verification, e o cliente é a pessoa do documento.",
-    "Statements de CIS recebidos de um empreiteiro (o cliente sofreu dedução) vão para CIS Suffered; os que o cliente emite para subcontratados vão para CIS Deducted.",
-    "País: use o país da empresa ou pessoa cliente (endereço, moeda, número de VAT GB/IE/PT, CNPJ/CPF do Brasil). Na dúvida entre países, deixe pais como null.",
-    "Nome do cliente: escreva o nome oficial completo como aparece no documento (ex.: 'Alves Marketing Business and Network Ltd'). Se o cliente estiver no catálogo, informe também o código dele."
+    "The client is whoever hires the accounting firm: on a supplier invoice it is the BUYER; on a sales invoice it is the SELLER; on a bank statement it is the account holder; on a payslip it is the employer (the company); on a vehicle document (DVLA) it is the registered keeper.",
+    "Each document goes to ONE service only: the service where the team will USE it first.",
+    "Sales, purchases/expenses, bank statements and wages reports of a VAT-registered client go to VAT.",
+    "Company documents that are not VAT, PAYE or Companies House (e.g. vehicle documents, insurance, loans, leases, year-end and Corporation Tax/CT600 papers) go to Limited Company.",
+    "Payslips, P60, P45, P11D, payroll reports, PAYE letters and workplace pension go to PAYE.",
+    "Personal documents of an individual (income, rental income, interest, personal P60, HMRC letters about Self Assessment or UTR) go to Self Assessment, and the client is the PERSON, not the company.",
+    "Documents that stay valid for years (certificate of incorporation, articles, shareholder register, engagement letter, UTR letter, ID and proof of address for AML) go to Permanent Data.",
+    "Companies House filings and letters (confirmation statement, change of officers, registered office, strike-off notices) go to Compliance - Companies House.",
+    "Anything else goes to Other.",
+    "Country: use the client's country (address, currency, GB/IE/PT VAT number, Brazilian CNPJ/CPF). If unsure between countries, leave pais empty.",
+    "Client name: write the full official name as on the document (e.g. 'ARS Car Direct Ltd'). If the client is in the client list, also give its code."
   ],
 
   "paises": {
-    "UK": "Accurate UK",
-    "Brasil": "Accurate Brasil",
-    "Irlanda": "Accurate Irlanda",
-    "Portugal": "Accurate Portugal"
+    "UK": {"pasta": "Accurate UK", "prefixo": "UK"},
+    "Brazil": {"pasta": "Accurate Brazil", "prefixo": "BR"},
+    "Ireland": {"pasta": "Accurate Ireland", "prefixo": "IE"},
+    "Portugal": {"pasta": "Accurate Portugal", "prefixo": "PT"}
   },
 
+  "year_end_padrao": "31/03",
+
   "servicos": [
-    {"pasta": "VAT", "descricao": "Declaração de VAT (Making Tax Digital): vendas, compras/despesas, extratos e salários do período, recibo de envio da declaração."},
-    {"pasta": "Payroll", "descricao": "Folha de pagamento (PAYE): holerites, P60, P45, P11D, relatórios de folha, cartas de PAYE, pensão de funcionários."},
-    {"pasta": "Self-Assessment", "descricao": "Imposto de renda de pessoa física (tax return): rendimentos, aluguéis, juros, dividendos, cartas da HMRC sobre Self Assessment/UTR."},
-    {"pasta": "Ltd Company - Year End", "descricao": "Fechamento anual de empresa limitada: contas anuais, Corporation Tax/CT600, Confirmation Statement, Companies House, documentos contábeis fora do VAT."},
-    {"pasta": "CIS Suffered", "descricao": "CIS sofrido: statements recebidos de empreiteiros que pagaram o cliente com retenção."},
-    {"pasta": "CIS Deducted", "descricao": "CIS retido: o cliente é empreiteiro e deduz CIS dos subcontratados (CIS300, statements emitidos)."},
-    {"pasta": "Bookkeeping", "descricao": "Clientes só de bookkeeping ou instituições de caridade: lançamentos do dia a dia."},
-    {"pasta": "Identity Verification", "descricao": "Identificação do cliente (KYC/AML, GOV.UK One Login): passaporte, carteira de motorista, BRP, comprovante de endereço."},
-    {"pasta": "Insolvency", "descricao": "Processos de insolvência ou liquidação da empresa."},
-    {"pasta": "Other Services", "descricao": "Qualquer documento que não se encaixa nos serviços acima."}
+    {"pasta": "Limited Company", "subpasta": "YE {ye}", "empresa": true, "pessoa": false,
+     "descricao": "Limited company records and year-end: accounts, Corporation Tax/CT600, vehicle documents (DVLA), insurance, loans, leases and other company papers that are not VAT, PAYE or Companies House."},
+    {"pasta": "VAT", "empresa": true, "pessoa": false,
+     "descricao": "VAT returns (Making Tax Digital): sales, purchases/expenses, bank statements and wages for the period, VAT submission receipts and HMRC VAT letters."},
+    {"pasta": "PAYE", "empresa": true, "pessoa": false,
+     "descricao": "Payroll: payslips, P60, P45, P11D, payroll reports, PAYE letters, workplace pension."},
+    {"pasta": "Self Assessment", "empresa": true, "pessoa": true,
+     "descricao": "Personal tax return of an individual: income, rental income, interest, dividends, HMRC Self Assessment and UTR letters."},
+    {"pasta": "Permanent Data", "empresa": true, "pessoa": true,
+     "descricao": "Long-lasting records: certificate of incorporation, articles, shareholders, engagement letter, UTR letter, ID and proof of address (AML)."},
+    {"pasta": "Compliance - Companies House", "empresa": true, "pessoa": false,
+     "descricao": "Companies House filings and letters: confirmation statement, officers, registered office, strike-off notices."},
+    {"pasta": "Other", "empresa": true, "pessoa": true,
+     "descricao": "Any document that does not fit the services above."}
   ],
 
   "tipos_documento": [
-    {"pasta": "Sales invoices", "arquivo": "Sales invoice", "descricao": "fatura ou recibo de venda emitido pelo cliente"},
-    {"pasta": "Purchase invoices", "arquivo": "Purchase invoice", "descricao": "fatura de fornecedor, compra ou despesa"},
-    {"pasta": "Receipts", "arquivo": "Receipt", "descricao": "recibo ou cupom de compra/despesa"},
-    {"pasta": "Bank statements", "arquivo": "Bank statement", "descricao": "extrato de banco ou cartão"},
-    {"pasta": "Payroll reports", "arquivo": "Payroll report", "descricao": "relatório de folha, wages journal"},
-    {"pasta": "Payslips", "arquivo": "Payslip", "descricao": "holerite de funcionário"},
-    {"pasta": "P60 P45 P11D", "arquivo": "P60-P45-P11D", "descricao": "formulários P60, P45 ou P11D"},
-    {"pasta": "HMRC letters", "arquivo": "HMRC letter", "descricao": "carta ou notificação da HMRC"},
-    {"pasta": "VAT returns", "arquivo": "VAT return", "descricao": "declaração de VAT ou comprovante de envio"},
-    {"pasta": "Companies House", "arquivo": "Companies House", "descricao": "documento da Companies House"},
-    {"pasta": "CIS statements", "arquivo": "CIS statement", "descricao": "payment and deduction statement de CIS"},
-    {"pasta": "ID documents", "arquivo": "ID document", "descricao": "passaporte, carteira de motorista, BRP"},
-    {"pasta": "Proof of address", "arquivo": "Proof of address", "descricao": "comprovante de endereço"},
-    {"pasta": "Pension", "arquivo": "Pension", "descricao": "documento de pensão"},
-    {"pasta": "Contracts", "arquivo": "Contract", "descricao": "contrato ou carta de engajamento"},
-    {"pasta": "Other documents", "arquivo": "Document", "descricao": "qualquer outro documento"}
+    {"pasta": "Sales invoice", "descricao": "sales invoice or receipt issued by the client"},
+    {"pasta": "Purchase invoice", "descricao": "supplier invoice, purchase or expense"},
+    {"pasta": "Receipt", "descricao": "purchase/expense receipt"},
+    {"pasta": "Bank statement", "descricao": "bank or card statement"},
+    {"pasta": "Payroll report", "descricao": "payroll report, wages journal"},
+    {"pasta": "Payslip", "descricao": "employee payslip"},
+    {"pasta": "P60 P45 P11D", "descricao": "P60, P45 or P11D form"},
+    {"pasta": "HMRC letter", "descricao": "HMRC letter or notice"},
+    {"pasta": "VAT return", "descricao": "VAT return or submission receipt"},
+    {"pasta": "Companies House", "descricao": "Companies House document"},
+    {"pasta": "Vehicle document", "descricao": "DVLA document: V5C, VTL306, vehicle tax, registration"},
+    {"pasta": "Insurance", "descricao": "insurance policy or certificate"},
+    {"pasta": "ID document", "descricao": "passport, driving licence, BRP"},
+    {"pasta": "Proof of address", "descricao": "proof of address"},
+    {"pasta": "Pension", "descricao": "pension document"},
+    {"pasta": "Contract", "descricao": "contract or engagement letter"},
+    {"pasta": "Other document", "descricao": "any other document"}
   ]
 }

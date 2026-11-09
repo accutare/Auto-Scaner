@@ -1,4 +1,4 @@
-"""Regras do escritório (servicos.json): países, serviços e tipos de documento que viram pastas."""
+"""Regras do escritório (servicos.json): países, serviços (pastas) e tipos de documento."""
 import json
 import os
 from dataclasses import dataclass
@@ -7,18 +7,34 @@ PADRAO_REPO = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 
 
 @dataclass
-class Item:
-    pasta: str
+class Pais:
+    codigo: str     # usado pela IA (ex.: "UK")
+    pasta: str      # ex.: "Accurate UK"
+    prefixo: str    # ex.: "UK" -> pastas "UK - VAT"
+
+
+@dataclass
+class Servico:
+    pasta: str                  # ex.: "Limited Company"
     descricao: str
-    arquivo: str = ""   # rótulo usado no nome do arquivo (tipos de documento)
+    subpasta: str = ""          # ex.: "YE {ye}" (vazio = arquivo direto na pasta do serviço)
+    empresa: bool = True        # criar esta pasta para clientes empresa
+    pessoa: bool = True         # criar esta pasta para clientes pessoa física
+
+
+@dataclass
+class Tipo:
+    nome: str
+    descricao: str
 
 
 @dataclass
 class Regras:
     regras_gerais: list[str]
-    paises: dict[str, str]          # código usado pela IA -> nome da pasta do país
-    servicos: list[Item]
-    tipos: list[Item]
+    paises: dict[str, Pais]
+    servicos: list[Servico]
+    tipos: list[Tipo]
+    year_end_padrao: str = "31/03"
 
     @property
     def nomes_servicos(self) -> list[str]:
@@ -26,20 +42,22 @@ class Regras:
 
     @property
     def nomes_tipos(self) -> list[str]:
-        return [t.pasta for t in self.tipos]
+        return [t.nome for t in self.tipos]
 
-    def rotulo_tipo(self, pasta_tipo: str | None) -> str:
-        for t in self.tipos:
-            if t.pasta == pasta_tipo:
-                return t.arquivo or t.pasta
-        return "Document"
+    def servico(self, nome: str | None) -> Servico | None:
+        return next((s for s in self.servicos if s.pasta == nome), None)
+
+    def pastas_de_servico(self, pais: Pais, tipo_cliente: str) -> list[str]:
+        """Todas as pastas de serviço que um cliente desse tipo recebe (ex.: 'UK - VAT')."""
+        return [f"{pais.prefixo} - {s.pasta}" for s in self.servicos
+                if (s.pessoa if tipo_cliente == "pessoa" else s.empresa)]
 
     def texto_para_ia(self) -> str:
-        linhas = ["Países (use o código em \"pais\"): " + ", ".join(self.paises)]
-        linhas.append("\nServiços (use o nome exato em \"servico\"):")
+        linhas = ['Países (use o código em "pais"): ' + ", ".join(self.paises)]
+        linhas.append('\nServiços (use o nome exato em "servico"):')
         linhas += [f'- "{s.pasta}": {s.descricao}' for s in self.servicos]
-        linhas.append("\nTipos de documento (use o nome exato em \"tipo_documento\"):")
-        linhas += [f'- "{t.pasta}": {t.descricao}' for t in self.tipos]
+        linhas.append('\nTipos de documento (use o nome exato em "tipo_documento"):')
+        linhas += [f'- "{t.nome}": {t.descricao}' for t in self.tipos]
         return "\n".join(linhas)
 
 
@@ -48,9 +66,17 @@ def carregar(caminho: str | None) -> Regras:
     arq = caminho if caminho and os.path.exists(caminho) else PADRAO_REPO
     with open(arq, encoding="utf-8") as f:
         d = json.load(f)
+    paises = {}
+    for codigo, v in d.get("paises", {}).items():
+        if isinstance(v, str):
+            v = {"pasta": v, "prefixo": codigo}
+        paises[codigo] = Pais(codigo, v["pasta"], v.get("prefixo", codigo))
     return Regras(
         regras_gerais=list(d.get("regras_gerais", [])),
-        paises=dict(d.get("paises", {})),
-        servicos=[Item(s["pasta"], s.get("descricao", "")) for s in d.get("servicos", [])],
-        tipos=[Item(t["pasta"], t.get("descricao", ""), t.get("arquivo", "")) for t in d.get("tipos_documento", [])],
+        paises=paises,
+        servicos=[Servico(s["pasta"], s.get("descricao", ""), s.get("subpasta", ""),
+                          bool(s.get("empresa", True)), bool(s.get("pessoa", True)))
+                  for s in d.get("servicos", [])],
+        tipos=[Tipo(t.get("nome") or t["pasta"], t.get("descricao", "")) for t in d.get("tipos_documento", [])],
+        year_end_padrao=d.get("year_end_padrao", "31/03"),
     )

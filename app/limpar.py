@@ -4,7 +4,8 @@ Regras de segurança:
   - Só mexe em pastas cujo nome começa com "TESTE -". Qualquer outra configuração faz o programa parar.
   - Primeiro devolve TODOS os documentos (com o nome original) para o lugar de onde vieram e confere que
     cada um chegou lá. Só então apaga as pastas de teste.
-  - Uma pasta de teste só é apagada se nela não sobrar nenhum documento (só o Controle.xlsx e o backup).
+  - Uma pasta de teste só é apagada se nela não sobrar nenhum documento (só o Controle.xlsx, o backup e
+    cópias de teste cujo original idêntico já está na pasta de entrada).
   - Apagar no Dropbox manda para a lixeira (recuperável).
   - O banco local do teste não é apagado: é renomeado para controle-teste-<data>.db.
 
@@ -56,8 +57,9 @@ def limpar(dbx, pastas_teste: list[str], pasta_entrada: str, origens: dict[str, 
             raise SystemExit(f"Segurança: '{p}' não é uma pasta de TESTE. Nada foi feito.")
     raizes = sorted({raiz(p) for p in pastas_teste})
 
-    # 1) devolver documentos
+    # 1) devolver documentos (cópias de teste cujo original já está no lugar ficam para ir à lixeira)
     devolvidos = []
+    copias: set[str] = set()
     for r in raizes:
         for arq in dbx.listar_recursivo(r):
             if GERADOS.search(arq.caminho):
@@ -66,6 +68,11 @@ def limpar(dbx, pastas_teste: list[str], pasta_entrada: str, origens: dict[str, 
             destino = origens.get(m.group(1)) if m else None
             if not destino:
                 destino = f"{pasta_entrada}/{nome_original(arq.nome)}"
+            if arq.content_hash and dbx.hash_de(destino) == arq.content_hash:
+                # Cópia feita no modo teste: o original idêntico já está no lugar. Não devolve (evita duplicar).
+                copias.add(arq.caminho)
+                relatorio.append(f"cópia de teste (o original já está em {destino}): {arq.caminho}")
+                continue
             final = dbx.mover(arq.caminho, destino)
             devolvidos.append(final)
             relatorio.append(f"devolvido: {arq.caminho} -> {final}")
@@ -79,7 +86,8 @@ def limpar(dbx, pastas_teste: list[str], pasta_entrada: str, origens: dict[str, 
 
     # 3) apagar pastas de teste que ficaram sem documentos
     for r in raizes:
-        restantes = [a.caminho for a in dbx.listar_recursivo(r) if not GERADOS.search(a.caminho)]
+        restantes = [a.caminho for a in dbx.listar_recursivo(r)
+                     if not GERADOS.search(a.caminho) and a.caminho not in copias]
         if restantes:
             relatorio.append(f"não apaguei {r}: ainda tem documentos ({len(restantes)})")
             continue

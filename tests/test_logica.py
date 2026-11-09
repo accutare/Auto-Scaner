@@ -80,6 +80,9 @@ class FakeDbx:
         self.movimentos.append((origem, destino))
         return destino
 
+    def garantir_pasta(self, caminho):
+        self.pastas = getattr(self, "pastas", []) + [caminho]
+
     listar_pastas = staticmethod(listar_pastas)
 
 
@@ -99,7 +102,7 @@ def resp(**kw):
         "cliente_id": None, "nome_cliente": "Alves Marketing Business & Network Limited",
         "dono_ou_diretor": "Rafael Alves Pinto",
         "company_number": None, "vat_number": None, "utr": None, "paye_ref": None,
-        "servico": "VAT", "tipo_documento": "Purchase invoices",
+        "servico": "VAT", "tipo_documento": "Purchase invoice",
         "motivo_classificacao": "fatura de fornecedor de cliente com VAT",
         "fornecedor_ou_emissor": "Smart Growth Consultancy Ltd", "data_documento": "2026-05-14",
         "periodo_inicio": None, "periodo_fim": None, "valor_total": "1,234.56", "moeda": "GBP",
@@ -144,6 +147,9 @@ class TestCatalogo(unittest.TestCase):
 
 
 class TestFluxo(unittest.TestCase):
+    SERVICOS_UK = ["UK - Limited Company", "UK - VAT", "UK - PAYE", "UK - Self Assessment",
+                   "UK - Permanent Data", "UK - Compliance - Companies House", "UK - Other"]
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.reg = Registro(os.path.join(self.tmp, "t.db"))
@@ -170,67 +176,89 @@ class TestFluxo(unittest.TestCase):
         self.rodar(resp(cliente_id=self.alves))
         sistema, esquema = self.extrator.chamadas[0]
         self.assertIn(self.alves, sistema)
-        self.assertIn('"Purchase invoices"', sistema)
-        self.assertIn("VAT", esquema["properties"]["servico"]["enum"])
+        self.assertIn('"Limited Company"', sistema)
+        self.assertEqual(esquema["properties"]["servico"]["enum"][:2], ["Limited Company", "VAT"])
         self.assertNotIn("anyOf", json.dumps(esquema))
-        self.assertEqual(set(esquema["required"]), set(esquema["properties"]))
+
+    def test_exemplo_ars_car_direct(self):
+        """O caso pedido: documento da DVLA de 09/11/2026 vai para Limited Company / YE 31 03 2027,
+        com o nome original, e a empresa recebe todas as pastas de serviço."""
+        nome = "ARS Car Direct - DVLA VTL306 09.11.2026 (1).pdf"
+        dbx = self.rodar(resp(nome_cliente="ARS Car Direct Ltd", servico="Limited Company",
+                              tipo_documento="Vehicle document", data_documento="2026-11-09",
+                              fornecedor_ou_emissor="DVLA"), nome=nome)
+        self.assertEqual(self.destino(dbx),
+                         f"{NOVA}/Accurate UK/ARS Car Direct Ltd/UK - Limited Company/YE 31 03 2027/{nome}")
+        self.assertEqual(sorted(dbx.pastas),
+                         sorted(f"{NOVA}/Accurate UK/ARS Car Direct Ltd/{p}" for p in self.SERVICOS_UK))
+        l = self.linha()
+        self.assertEqual((l["status"], l["servico"], l["tipo"]), ("OK", "Limited Company", "Vehicle document"))
+
+    def test_year_end(self):
+        from datetime import date
+        from app.organizador import year_end
+        self.assertEqual(year_end(date(2026, 11, 9), "31/03"), date(2027, 3, 31))
+        self.assertEqual(year_end(date(2027, 3, 31), "31/03"), date(2027, 3, 31))
+        self.assertEqual(year_end(date(2026, 1, 15), "31/12"), date(2026, 12, 31))
+        self.assertEqual(year_end(date(2027, 1, 10), "29/02"), date(2027, 2, 28))
 
     def test_cliente_conhecido_usa_o_nome_de_hoje(self):
         d = self.destino(self.rodar(resp(cliente_id=self.alves)))
-        self.assertTrue(d.startswith(
-            f"{NOVA}/Accurate UK/Alves Marketing Business and Network Ltd/VAT/Purchase invoices/"
-            "2026-05-14 - Purchase invoice - Smart Growth Consultancy Ltd - 1206 - GBP 1234.56 ["), d)
+        self.assertEqual(d, f"{NOVA}/Accurate UK/Alves Marketing Business and Network Ltd/UK - VAT/scan001.pdf")
         l = self.linha()
         self.assertEqual((l["status"], l["pais"], l["dono"], l["servico"], l["tipo"]),
-                         ("OK", "UK", "Rafael Alves Pinto", "VAT", "Purchase invoices"))
+                         ("OK", "UK", "Rafael Alves Pinto", "VAT", "Purchase invoice"))
         self.assertEqual(l["caminho_original"], "/Scans/scan001.pdf")
 
     def test_reaproveita_pasta_ja_criada_na_estrutura_nova(self):
-        d = self.destino(self.rodar(resp(nome_cliente="Bliss Clean Group Ltd", servico="Payroll",
-                                         tipo_documento="Payslips")))
-        self.assertTrue(d.startswith(f"{NOVA}/Accurate UK/Bliss Clean Group LIMITED/Payroll/Payslips/"), d)
+        d = self.destino(self.rodar(resp(nome_cliente="Bliss Clean Group Ltd", servico="PAYE",
+                                         tipo_documento="Payslip")))
+        self.assertEqual(d, f"{NOVA}/Accurate UK/Bliss Clean Group LIMITED/UK - PAYE/scan001.pdf")
 
     def test_cliente_novo_cria_pasta_e_avisa(self):
         d = self.destino(self.rodar(resp(nome_cliente="Nova Empresa Ltd")))
-        self.assertTrue(d.startswith(f"{NOVA}/Accurate UK/Nova Empresa Ltd/VAT/Purchase invoices/"), d)
+        self.assertEqual(d, f"{NOVA}/Accurate UK/Nova Empresa Ltd/UK - VAT/scan001.pdf")
         self.assertIn("cliente novo", self.linha()["motivo"])
 
-    def test_pessoa_no_self_assessment(self):
-        d = self.destino(self.rodar(resp(tipo_cliente="pessoa", nome_cliente="Rafael Alves Pinto",
-                                         servico="Self-Assessment", tipo_documento="HMRC letters")))
-        self.assertTrue(d.startswith(f"{NOVA}/Accurate UK/Rafael Alves Pinto/Self-Assessment/HMRC letters/"), d)
+    def test_pessoa_recebe_so_as_pastas_de_pessoa(self):
+        dbx = self.rodar(resp(tipo_cliente="pessoa", nome_cliente="Rafael Alves Pinto",
+                              servico="Self Assessment", tipo_documento="HMRC letter"))
+        self.assertEqual(self.destino(dbx), f"{NOVA}/Accurate UK/Rafael Alves Pinto/UK - Self Assessment/scan001.pdf")
+        self.assertEqual(sorted(p.rsplit("/", 1)[1] for p in dbx.pastas),
+                         ["UK - Other", "UK - Permanent Data", "UK - Self Assessment"])
 
     def test_outro_pais(self):
-        d = self.destino(self.rodar(resp(pais="Brasil", nome_cliente="Padaria Pão Quente Ltda",
-                                         servico="Bookkeeping", tipo_documento="Receipts", moeda="BRL")))
-        self.assertTrue(d.startswith(f"{NOVA}/Accurate Brasil/Padaria Pão Quente Ltda/Bookkeeping/Receipts/"), d)
+        d = self.destino(self.rodar(resp(pais="Brazil", nome_cliente="Padaria Pão Quente Ltda",
+                                         servico="Other", tipo_documento="Receipt", moeda="BRL")))
+        self.assertEqual(d, f"{NOVA}/Accurate Brazil/Padaria Pão Quente Ltda/BR - Other/scan001.pdf")
 
     def test_duvidas_vao_para_revisar(self):
-        for kw in ({"confianca": 0.4}, {"legivel": False}, {"pais": None},
-                   {"nome_cliente": None}, {"servico": None}, {"tipo_documento": "Inventado"}):
+        for kw in ({"confianca": 0.4}, {"legivel": False}, {"pais": ""},
+                   {"nome_cliente": ""}, {"servico": ""}, {"servico": "Inventado"}):
             with self.subTest(kw=kw):
-                d = self.destino(self.rodar(resp(**kw), conteudo=repr(kw).encode()))
-                self.assertTrue(d.startswith("/Docflow/Revisar/"), d)
+                dbx = self.rodar(resp(**kw), conteudo=repr(kw).encode())
+                self.assertTrue(self.destino(dbx).startswith("/Docflow/Revisar/"))
+                self.assertFalse(getattr(dbx, "pastas", []))
                 self.assertEqual(self.linha()["status"], "PENDENTE")
 
     def test_nome_de_pasta_sem_caracteres_proibidos(self):
         d = self.destino(self.rodar(resp(nome_cliente='A/B: "Teste" Ltd')))
-        self.assertIn("/Accurate UK/A B Teste Ltd/VAT/", d)
+        self.assertIn("/Accurate UK/A B Teste Ltd/UK - VAT/", d)
 
     def test_duplicado_por_conteudo(self):
         self.rodar(resp(cliente_id=self.alves))
         self.assertIn("DUPLICADO", self.destino(self.rodar(resp(cliente_id=self.alves))))
 
-    def test_simulacao_nao_move_nada(self):
+    def test_simulacao_nao_move_nem_cria_nada(self):
         class CfgSim(FakeCfg):
             simulacao = True
         dbx = self.rodar(resp(cliente_id=self.alves), cfg=CfgSim)
         self.assertEqual(dbx.movimentos, [])
+        self.assertFalse(getattr(dbx, "pastas", []))
         l = self.linha()
         self.assertEqual(l["status"], "SIMULADO")
-        self.assertIn("/VAT/Purchase invoices/", l["caminho_final"])
+        self.assertIn("/UK - VAT/", l["caminho_final"])
         self.assertIn("seria OK", l["motivo"])
-        # depois de ligar de verdade, o mesmo arquivo não conta como duplicado
         self.assertTrue(self.destino(self.rodar(resp(cliente_id=self.alves))).startswith(NOVA))
 
     def test_backup_e_excel(self):
@@ -317,7 +345,10 @@ class FakeDropboxArvore:
         self.apagados = []
 
     def _arq(self, c):
-        return ArquivoRemoto(c, c.rsplit("/", 1)[1], 1, 0, "h")
+        return ArquivoRemoto(c, c.rsplit("/", 1)[1], 1, 0, "hash:" + self.arquivos[c].decode())
+
+    def hash_de(self, c):
+        return ("hash:" + self.arquivos[c].decode()) if c in self.arquivos else None
 
     def listar_recursivo(self, pasta):
         return [self._arq(c) for c in sorted(self.arquivos) if c.lower().startswith(pasta.lower() + "/")]
@@ -335,6 +366,9 @@ class FakeDropboxArvore:
 
     def existe(self, c):
         return c in self.arquivos or any(k.startswith(c + "/") for k in self.arquivos)
+
+    def garantir_pasta(self, caminho):
+        self.pastas = getattr(self, "pastas", []) + [caminho]
 
     def apagar(self, c):
         self.apagados.append(c)
@@ -372,6 +406,17 @@ class TestLimpeza(unittest.TestCase):
         limpar(dbx, self.PASTAS, "/Scans", {})
         self.assertEqual(dbx.arquivos, {"/Scans/scan 9.pdf": b"y"})
 
+    def test_copia_de_teste_nao_volta_duplicada(self):
+        from app.limpar import limpar
+        nome = "ARS Car Direct - DVLA VTL306 09.11.2026 (1).pdf"
+        dbx = FakeDropboxArvore({
+            f"/scans/{nome}": b"dvla",
+            f"/TESTE - Clientes/Accurate UK/ARS Car Direct Ltd/UK - Limited Company/YE 31 03 2027/{nome}": b"dvla",
+        })
+        limpar(dbx, self.PASTAS, "/scans", {})
+        self.assertEqual(dbx.arquivos, {f"/scans/{nome}": b"dvla"})
+        self.assertEqual(dbx.apagados, ["/TESTE - Clientes"])
+
     def test_recusa_pastas_que_nao_sao_de_teste(self):
         from app.limpar import limpar
         dbx = FakeDropboxArvore({"/Clientes/a.pdf": b"z"})
@@ -401,7 +446,7 @@ class TestModoCopia(unittest.TestCase):
         self.assertIn("/Scans/scan1.pdf", dbx.arquivos)
         copia = [k for k in dbx.arquivos if k.startswith(NOVA + "/Accurate UK/")]
         self.assertEqual(len(copia), 1, dbx.arquivos)
-        self.assertIn("/VAT/Purchase invoices/", copia[0])
+        self.assertIn("/UK - VAT/scan1.pdf", copia[0])
         # na próxima rodada o mesmo arquivo é só pulado (não vira DUPLICADO)
         self.assertIsNone(processar_arquivo(arq, CfgCopia, dbx, FakeExtrator(resp()), reg, ctx))
 

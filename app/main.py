@@ -78,6 +78,10 @@ def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Con
     ext = extrator.extrair(arq.nome, conteudo, ctx.sistema, ctx.esquema)
     d = decidir(ext, arq.nome, ctx.catalogo, ctx.regras, cfg.confianca_minima,
                 cfg.pasta_clientes, cfg.pasta_revisar, hash_curto, dbx.listar_pastas)
+    if d.status == "OK" and not cfg.simulacao:
+        # Todo cliente recebe todas as pastas de serviço, mesmo vazias
+        for pasta in d.pastas_criar:
+            dbx.garantir_pasta(pasta)
     final = mover(d.caminho_destino)
     status = "SIMULADO" if cfg.simulacao else d.status
     motivo = d.motivo
