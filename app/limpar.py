@@ -9,7 +9,8 @@ Regras de segurança:
   - Apagar no Dropbox manda para a lixeira (recuperável).
   - O banco local do teste não é apagado: é renomeado para controle-teste-<data>.db.
 
-Uso no servidor:  docker compose run --rm docflow python -m app.limpar
+Uso no servidor:  docker compose run --rm docflow python -m app.limpar                 (todas as pastas de teste)
+                  docker compose run --rm docflow python -m app.limpar "/TESTE - Docflow"  (só esta)
 """
 import logging
 import os
@@ -107,9 +108,13 @@ def main():
     dbx = DropboxClient(cfg.dropbox_app_key, cfg.dropbox_app_secret, cfg.dropbox_refresh_token,
                         cfg.dropbox_team_space)
     caminho_db = os.path.join(cfg.dados_dir, "controle.db")
-    pastas = [cfg.pasta_clientes, cfg.pasta_revisar, cfg.pasta_erros, cfg.pasta_controle]
+    alvos = [a for a in sys.argv[1:] if a.strip()]
+    if not alvos and os.environ.get("LIMPEZA_ALVO", "").strip():
+        alvos = [os.environ["LIMPEZA_ALVO"].strip()]
+    # Sem argumento: limpa todas as pastas de teste. Com argumento: só as pastas indicadas.
+    pastas = alvos or [cfg.pasta_clientes, cfg.pasta_revisar, cfg.pasta_erros, cfg.pasta_controle]
     relatorio = limpar(dbx, pastas, cfg.pasta_entrada, origens_do_banco(caminho_db))
-    if os.path.exists(caminho_db) and not any(l.startswith("ATENÇÃO") for l in relatorio):
+    if not alvos and os.path.exists(caminho_db) and not any(l.startswith("ATENÇÃO") for l in relatorio):
         novo = os.path.join(cfg.dados_dir, f"controle-teste-{datetime.now():%Y%m%d-%H%M%S}.db")
         os.rename(caminho_db, novo)
         relatorio.append(f"banco do teste guardado como {os.path.basename(novo)}")

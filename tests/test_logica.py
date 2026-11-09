@@ -417,6 +417,21 @@ class TestLimpeza(unittest.TestCase):
         self.assertEqual(dbx.arquivos, {f"/scans/{nome}": b"dvla"})
         self.assertEqual(dbx.apagados, ["/TESTE - Clientes"])
 
+    def test_limpa_so_a_pasta_indicada(self):
+        from app.limpar import limpar
+        dbx = FakeDropboxArvore({
+            "/scans/DOC041126.pdf": b"doc",
+            "/TESTE - Docflow/Revisar/[11112222] DOC041126.pdf": b"doc",
+            "/TESTE - Docflow/Controle/Controle.xlsx": b"x",
+            "/TESTE - Clientes/Accurate UK/ARS Car Direct Ltd/UK - Limited Company/YE 31 03 2027/a.pdf": b"ars",
+        })
+        limpar(dbx, ["/TESTE - Docflow"], "/Scans", {"11112222": "/scans/DOC041126.pdf"})
+        self.assertEqual(dbx.apagados, ["/TESTE - Docflow"])
+        self.assertEqual(dbx.arquivos["/scans/DOC041126.pdf"], b"doc")
+        self.assertNotIn("/scans/DOC041126_2.pdf", dbx.arquivos)
+        self.assertIn("/TESTE - Clientes/Accurate UK/ARS Car Direct Ltd/UK - Limited Company/YE 31 03 2027/a.pdf",
+                      dbx.arquivos)
+
     def test_recusa_pastas_que_nao_sao_de_teste(self):
         from app.limpar import limpar
         dbx = FakeDropboxArvore({"/Clientes/a.pdf": b"z"})
