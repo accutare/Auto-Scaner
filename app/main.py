@@ -3,6 +3,9 @@
 Uso:
   python -m app.main            fica ligado, olhando a pasta de entrada a cada minuto
   python -m app.main --uma-vez  processa o que estiver na pasta de entrada agora e termina (para testes)
+  python -m app.main --uma-vez --limite 1   idem, mas só o primeiro arquivo
+
+Com SIMULACAO=true nada é gravado no Dropbox: o resultado aparece só na tela.
 """
 import hashlib
 import logging
@@ -45,8 +48,8 @@ class Contexto:
         self.esquema = montar_esquema(list(regras.paises), regras.nomes_servicos, regras.nomes_tipos)
 
 
-def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Contexto) -> str:
-    """Processa um arquivo e devolve o status gravado."""
+def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Contexto) -> dict:
+    """Processa um arquivo e devolve um resumo do que foi decidido."""
     conteudo = dbx.baixar(arq.caminho)
     hash_arq = hashlib.sha256(conteudo).hexdigest()
     hash_curto = hash_arq[:8]
@@ -62,7 +65,7 @@ def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Con
             hash_arquivo=hash_arq, motivo="arquivo idêntico já processado antes (duplicado)",
         )
         log.info("Duplicado: %s", arq.nome)
-        return status
+        return {"arquivo": arq.nome, "status": status, "destino": final, "motivo": "duplicado"}
 
     ext = extrator.extrair(arq.nome, conteudo, ctx.sistema, ctx.esquema)
     d = decidir(ext, arq.nome, ctx.catalogo, ctx.regras, cfg.confianca_minima,
@@ -80,7 +83,9 @@ def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Con
         caminho_final=final, caminho_original=arq.caminho, hash_arquivo=hash_arq,
     )
     log.info("%s -> %s (%s)", arq.nome, status, final)
-    return status
+    return {"arquivo": arq.nome, "status": status, "seria": d.status, "pais": d.pais, "cliente": d.cliente,
+            "dono": ext.dono_ou_diretor, "servico": d.servico, "tipo": d.tipo, "destino": final,
+            "motivo": d.motivo, "resumo": ext.resumo, "confianca": ext.confianca}
 
 
 def mover_para_erros(arq, cfg, dbx, registro, motivo):
@@ -97,6 +102,23 @@ def mover_para_erros(arq, cfg, dbx, registro, motivo):
     )
 
 
+def mostrar_resultados(resultados: list[dict], simulacao: bool) -> None:
+    print("\n" + "=" * 70)
+    print("SIMULAÇÃO: nada foi movido nem criado no Dropbox." if simulacao else "RESULTADO")
+    if not resultados:
+        print("Nenhum arquivo processado (pasta vazia ou arquivos ainda sincronizando).")
+    rotulos = [("arquivo", "Arquivo"), ("seria", "Decisão"), ("status", "Status"), ("pais", "País"),
+               ("cliente", "Cliente"), ("dono", "Dono/Diretor"), ("servico", "Serviço"),
+               ("tipo", "Tipo de documento"), ("confianca", "Confiança"), ("resumo", "O que é"),
+               ("destino", "Destino"), ("motivo", "Observação")]
+    for r in resultados:
+        print("-" * 70)
+        for chave, rot in rotulos:
+            if r.get(chave) not in (None, ""):
+                print(f"{rot:>18}: {r[chave]}")
+    print("=" * 70 + "\n")
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -110,6 +132,10 @@ def main():
     extrator = Extrator(cfg.anthropic_api_key, cfg.claude_model, cfg.claude_esforco)
     registro = Registro(os.path.join(cfg.dados_dir, "controle.db"))
     uma_vez = "--uma-vez" in sys.argv
+    limite = None
+    if "--limite" in sys.argv:
+        limite = int(sys.argv[sys.argv.index("--limite") + 1])
+    resultados: list[dict] = []
     if not cfg.simulacao:
         for p in (cfg.pasta_revisar, cfg.pasta_erros, cfg.pasta_controle):
             dbx.garantir_pasta_recursiva(p)
@@ -141,7 +167,7 @@ def main():
                 log.info("Catálogo: %d serviços, %d clientes", len(catalogo.servicos), len(catalogo.clientes))
 
             for arq in dbx.listar(cfg.pasta_entrada):
-                if _parar:
+                if _parar or (limite is not None and len(resultados) >= limite):
                     break
                 if not arq.nome.lower().endswith(EXTENSOES):
                     continue
@@ -153,7 +179,7 @@ def main():
                 # Na rodada única, tenta até 3 vezes seguidas; no modo contínuo, uma vez por ciclo
                 for _tentativa in range(MAX_TENTATIVAS if uma_vez else 1):
                     try:
-                        processar_arquivo(arq, cfg, dbx, extrator, registro, ctx)
+                        resultados.append(processar_arquivo(arq, cfg, dbx, extrator, registro, ctx))
                         alterou = True
                         tentativas.pop(arq.caminho, None)
                         if cfg.simulacao:
@@ -165,18 +191,22 @@ def main():
                         log.exception("Falha (%d/%d) em %s", n, MAX_TENTATIVAS, arq.nome)
                         if n >= MAX_TENTATIVAS:
                             mover_para_erros(arq, cfg, dbx, registro, f"{type(e).__name__}: {e}")
+                            resultados.append({"arquivo": arq.nome, "status": "ERRO", "motivo": str(e)})
                             tentativas.pop(arq.caminho, None)
                             if cfg.simulacao:
                                 ja_simulados.add(arq.content_hash)
                             alterou = True
-            # Atualiza o Controle.xlsx no Dropbox (somente leitura: a fonte é o banco)
-            if alterou or (time.time() - ultimo_export) > 3600:
+            # Atualiza o Controle.xlsx no Dropbox (somente leitura: a fonte é o banco).
+            # Em simulação nada é gravado no Dropbox.
+            if cfg.simulacao:
+                pass
+            elif alterou or (time.time() - ultimo_export) > 3600:
                 dbx.enviar(f"{cfg.pasta_controle}/Controle.xlsx",
                            registro.exportar_excel(ctx.catalogo if ctx else None))
                 ultimo_export = time.time()
             # Backup do banco 1x por dia (7 cópias rotativas: uma por dia da semana)
             hoje = datetime.now().strftime("%Y-%m-%d")
-            if hoje != ultimo_backup:
+            if hoje != ultimo_backup and not cfg.simulacao:
                 dia = DIAS_SEMANA[datetime.now().weekday()]
                 dbx.enviar(f"{cfg.pasta_controle}/backup/controle-{dia}.db", registro.copia_backup())
                 ultimo_backup = hoje
@@ -186,6 +216,7 @@ def main():
             log.exception("Erro no ciclo; tentará de novo")
             ping_falha(cfg.healthcheck_url, f"{type(e).__name__}: {e}")
         if uma_vez:
+            mostrar_resultados(resultados, cfg.simulacao)
             break
         for _ in range(cfg.intervalo_segundos):
             if _parar:
