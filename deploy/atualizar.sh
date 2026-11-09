@@ -29,6 +29,13 @@ else
     docker compose stop
   fi
   mkdir -p dados
+  LIMPEZA=$(valor LIMPEZA_RODADA)
+  ULTIMA_LIMPEZA=$(cat dados/ultima-limpeza 2>/dev/null || true)
+  if [ -n "$LIMPEZA" ] && [ "$LIMPEZA" != "$ULTIMA_LIMPEZA" ]; then
+    echo "$LIMPEZA" > dados/ultima-limpeza
+    echo "$(date -Is) limpeza do teste $LIMPEZA"
+    docker compose run --rm docflow python -m app.limpar 2>&1 | tee -a dados/testes.log
+  fi
   RODADA=$(valor TESTE_RODADA)
   ULTIMA=$(cat dados/ultima-rodada 2>/dev/null || true)
   if [ -n "$RODADA" ] && [ "$RODADA" != "$ULTIMA" ]; then

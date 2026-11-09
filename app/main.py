@@ -54,10 +54,18 @@ def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Con
     hash_arq = hashlib.sha256(conteudo).hexdigest()
     hash_curto = hash_arq[:8]
 
+    copiar = getattr(cfg, "copiar", False)
+
     def mover(destino):
-        return destino if cfg.simulacao else dbx.mover(arq.caminho, destino)
+        if cfg.simulacao:
+            return destino
+        return dbx.copiar(arq.caminho, destino) if copiar else dbx.mover(arq.caminho, destino)
 
     if registro.duplicado(hash_arq):
+        if copiar:
+            # No modo cópia o original fica na pasta de entrada: o que já foi copiado é só pulado.
+            log.info("Já copiado antes, pulando: %s", arq.nome)
+            return None
         final = mover(f"{cfg.pasta_revisar}/DUPLICADO [{hash_curto}] {arq.nome}")
         status = "SIMULADO" if cfg.simulacao else "PENDENTE"
         registro.inserir(
@@ -94,7 +102,12 @@ def mover_para_erros(arq, cfg, dbx, registro, motivo):
     except Exception:  # noqa: BLE001
         hash_arq = arq.content_hash or arq.nome
     destino = f"{cfg.pasta_erros}/[{hash_arq[:8]}] {arq.nome}"
-    final = destino if cfg.simulacao else dbx.mover(arq.caminho, destino)
+    if cfg.simulacao:
+        final = destino
+    elif getattr(cfg, "copiar", False):
+        final = dbx.copiar(arq.caminho, destino)
+    else:
+        final = dbx.mover(arq.caminho, destino)
     registro.inserir(
         status="SIMULADO" if cfg.simulacao else "ERRO", arquivo_original=arq.nome,
         caminho_final=final, caminho_original=arq.caminho, hash_arquivo=hash_arq,
@@ -150,7 +163,8 @@ def main():
     ultimo_backup = ""
 
     log.info("Iniciado%s. Pasta de entrada: %s. Destino: %s. %s",
-             " em MODO SIMULAÇÃO (nada será movido)" if cfg.simulacao else "",
+             " em MODO SIMULAÇÃO (nada será movido)" if cfg.simulacao
+             else (" em MODO CÓPIA (o original fica na pasta de entrada)" if cfg.copiar else ""),
              cfg.pasta_entrada, cfg.pasta_clientes,
              "Uma rodada só." if uma_vez else f"Olhando a cada {cfg.intervalo_segundos}s.")
     while not _parar:
@@ -171,7 +185,7 @@ def main():
                     break
                 if not arq.nome.lower().endswith(EXTENSOES):
                     continue
-                if cfg.simulacao and arq.content_hash in ja_simulados:
+                if (cfg.simulacao or cfg.copiar) and arq.content_hash in ja_simulados:
                     continue
                 if not dbx.estavel(arq, cfg.segundos_estabilizar):
                     log.info("Ainda sincronizando, fica para a próxima rodada: %s", arq.nome)
@@ -179,10 +193,12 @@ def main():
                 # Na rodada única, tenta até 3 vezes seguidas; no modo contínuo, uma vez por ciclo
                 for _tentativa in range(MAX_TENTATIVAS if uma_vez else 1):
                     try:
-                        resultados.append(processar_arquivo(arq, cfg, dbx, extrator, registro, ctx))
-                        alterou = True
+                        r = processar_arquivo(arq, cfg, dbx, extrator, registro, ctx)
+                        if r is not None:
+                            resultados.append(r)
+                            alterou = True
                         tentativas.pop(arq.caminho, None)
-                        if cfg.simulacao:
+                        if cfg.simulacao or cfg.copiar:
                             ja_simulados.add(arq.content_hash)
                         break
                     except Exception as e:  # noqa: BLE001
@@ -193,7 +209,7 @@ def main():
                             mover_para_erros(arq, cfg, dbx, registro, f"{type(e).__name__}: {e}")
                             resultados.append({"arquivo": arq.nome, "status": "ERRO", "motivo": str(e)})
                             tentativas.pop(arq.caminho, None)
-                            if cfg.simulacao:
+                            if cfg.simulacao or cfg.copiar:
                                 ja_simulados.add(arq.content_hash)
                             alterou = True
             # Atualiza o Controle.xlsx no Dropbox (somente leitura: a fonte é o banco).

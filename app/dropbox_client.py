@@ -91,6 +91,38 @@ class DropboxClient:
             res = self.dbx.files_list_folder_continue(res.cursor)
         return sorted(nomes)
 
+    def listar_recursivo(self, pasta: str) -> list[ArquivoRemoto]:
+        """Todos os arquivos dentro da pasta e subpastas. Pasta inexistente -> lista vazia."""
+        itens: list[ArquivoRemoto] = []
+        try:
+            res = self.dbx.files_list_folder(pasta, recursive=True)
+        except ApiError as e:
+            if e.error.is_path() and e.error.get_path().is_not_found():
+                return []
+            raise
+        while True:
+            for entry in res.entries:
+                if isinstance(entry, FileMetadata):
+                    itens.append(ArquivoRemoto(entry.path_display, entry.name, entry.size,
+                                               entry.server_modified.timestamp(), entry.content_hash or ""))
+            if not res.has_more:
+                break
+            res = self.dbx.files_list_folder_continue(res.cursor)
+        return itens
+
+    def existe(self, caminho: str) -> bool:
+        try:
+            self.dbx.files_get_metadata(caminho)
+            return True
+        except ApiError as e:
+            if e.error.is_path() and e.error.get_path().is_not_found():
+                return False
+            raise
+
+    def apagar(self, caminho: str) -> None:
+        """Manda para a lixeira do Dropbox (recuperável); nunca apaga permanentemente."""
+        self.dbx.files_delete_v2(caminho)
+
     def estavel(self, arq: ArquivoRemoto, segundos: int) -> bool:
         """Arquivo só é processado se não foi modificado nos últimos N segundos
         (evita ler arquivo ainda sincronizando/escaneando)."""
@@ -101,14 +133,21 @@ class DropboxClient:
         return resp.content
 
     def mover(self, origem: str, destino: str) -> str:
-        """Move criando pastas; se já existir arquivo igual, acrescenta sufixo."""
+        """Move criando pastas; se já existir arquivo com o mesmo nome, acrescenta sufixo."""
+        return self._transferir(self.dbx.files_move_v2, origem, destino)
+
+    def copiar(self, origem: str, destino: str) -> str:
+        """Copia criando pastas (o original fica onde está); se o nome já existir, acrescenta sufixo."""
+        return self._transferir(self.dbx.files_copy_v2, origem, destino)
+
+    def _transferir(self, operacao, origem: str, destino: str) -> str:
         pasta_destino = destino.rsplit("/", 1)[0]
         self.garantir_pasta_recursiva(pasta_destino)
         final = destino
         tentativa = 1
         while True:
             try:
-                meta = self.dbx.files_move_v2(origem, final, autorename=False)
+                meta = operacao(origem, final, autorename=False)
                 return meta.metadata.path_display
             except ApiError as e:
                 if e.error.is_to() and e.error.get_to().is_conflict():

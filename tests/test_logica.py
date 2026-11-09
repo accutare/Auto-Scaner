@@ -308,5 +308,103 @@ class TestMigracao(unittest.TestCase):
         self.assertTrue(dados.startswith(b"PK"))
 
 
+
+class FakeDropboxArvore:
+    """Dropbox de mentira com arquivos (caminho -> bytes), para testar cópia e limpeza."""
+
+    def __init__(self, arquivos):
+        self.arquivos = dict(arquivos)
+        self.apagados = []
+
+    def _arq(self, c):
+        return ArquivoRemoto(c, c.rsplit("/", 1)[1], 1, 0, "h")
+
+    def listar_recursivo(self, pasta):
+        return [self._arq(c) for c in sorted(self.arquivos) if c.lower().startswith(pasta.lower() + "/")]
+
+    def mover(self, o, d):
+        self.arquivos[d] = self.arquivos.pop(o)
+        return d
+
+    def copiar(self, o, d):
+        self.arquivos[d] = self.arquivos[o]
+        return d
+
+    def baixar(self, c):
+        return self.arquivos[c]
+
+    def existe(self, c):
+        return c in self.arquivos or any(k.startswith(c + "/") for k in self.arquivos)
+
+    def apagar(self, c):
+        self.apagados.append(c)
+        for k in [k for k in self.arquivos if k == c or k.startswith(c + "/")]:
+            del self.arquivos[k]
+
+    listar_pastas = staticmethod(listar_pastas)
+
+
+class TestLimpeza(unittest.TestCase):
+    PASTAS = ["/TESTE - Clientes", "/TESTE - Docflow/Revisar", "/TESTE - Docflow/Erros",
+              "/TESTE - Docflow/Controle"]
+
+    def test_devolve_o_arquivo_original_e_so_depois_apaga(self):
+        from app.limpar import limpar
+        dbx = FakeDropboxArvore({
+            "/TESTE - Docflow/Erros/[002964cf] DOC041126-04112026133604.pdf": b"original",
+            "/TESTE - Docflow/Controle/Controle.xlsx": b"x",
+            "/TESTE - Docflow/Controle/backup/controle-seg.db": b"x",
+            "/scans/outro.pdf": b"outro",
+            "/!Accurate Complete Accounting Ltd - data files/Client Data/a.pdf": b"cliente",
+        })
+        origens = {"002964cf": "/scans/DOC041126-04112026133604.pdf"}
+        rel = limpar(dbx, self.PASTAS, "/Scans", origens)
+        self.assertEqual(dbx.arquivos["/scans/DOC041126-04112026133604.pdf"], b"original")
+        self.assertEqual(dbx.arquivos["/scans/outro.pdf"], b"outro")
+        self.assertIn("/!Accurate Complete Accounting Ltd - data files/Client Data/a.pdf", dbx.arquivos)
+        self.assertEqual(sorted(dbx.apagados), ["/TESTE - Docflow"])
+        self.assertFalse(any(k.startswith("/TESTE") for k in dbx.arquivos))
+        self.assertTrue(any(l.startswith("devolvido") for l in rel))
+
+    def test_sem_registro_devolve_para_a_entrada_sem_o_prefixo(self):
+        from app.limpar import limpar
+        dbx = FakeDropboxArvore({"/TESTE - Clientes/Accurate UK/X Ltd/VAT/Receipts/[aaaa1111] scan 9.pdf": b"y"})
+        limpar(dbx, self.PASTAS, "/Scans", {})
+        self.assertEqual(dbx.arquivos, {"/Scans/scan 9.pdf": b"y"})
+
+    def test_recusa_pastas_que_nao_sao_de_teste(self):
+        from app.limpar import limpar
+        dbx = FakeDropboxArvore({"/Clientes/a.pdf": b"z"})
+        with self.assertRaises(SystemExit):
+            limpar(dbx, ["/Clientes", "/TESTE - Docflow/Erros"], "/Scans", {})
+        self.assertEqual(dbx.arquivos, {"/Clientes/a.pdf": b"z"})
+
+    def test_nao_apaga_se_um_arquivo_nao_chegou(self):
+        from app.limpar import limpar
+        dbx = FakeDropboxArvore({"/TESTE - Docflow/Erros/[bbbb2222] a.pdf": b"a"})
+        dbx.existe = lambda c: False
+        rel = limpar(dbx, self.PASTAS, "/Scans", {})
+        self.assertEqual(dbx.apagados, [])
+        self.assertTrue(any(l.startswith("ATENÇÃO") for l in rel))
+
+
+class TestModoCopia(unittest.TestCase):
+    def test_copia_e_deixa_o_original(self):
+        class CfgCopia(FakeCfg):
+            copiar = True
+        reg = Registro(os.path.join(tempfile.mkdtemp(), "t.db"))
+        ctx = Contexto(montar_catalogo(RAIZ, listar_pastas, []), servmod.carregar(None))
+        dbx = FakeDropboxArvore({"/Scans/scan1.pdf": b"%PDF um"})
+        arq = ArquivoRemoto("/Scans/scan1.pdf", "scan1.pdf", 7, 0, "h")
+        r = processar_arquivo(arq, CfgCopia, dbx, FakeExtrator(resp()), reg, ctx)
+        self.assertEqual(r["status"], "OK")
+        self.assertIn("/Scans/scan1.pdf", dbx.arquivos)
+        copia = [k for k in dbx.arquivos if k.startswith(NOVA + "/Accurate UK/")]
+        self.assertEqual(len(copia), 1, dbx.arquivos)
+        self.assertIn("/VAT/Purchase invoices/", copia[0])
+        # na próxima rodada o mesmo arquivo é só pulado (não vira DUPLICADO)
+        self.assertIsNone(processar_arquivo(arq, CfgCopia, dbx, FakeExtrator(resp()), reg, ctx))
+
+
 if __name__ == "__main__":
     unittest.main()

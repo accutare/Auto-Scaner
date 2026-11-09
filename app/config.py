@@ -41,6 +41,7 @@ class Config:
     segundos_estabilizar: int
     catalogo_minutos: int
     simulacao: bool             # true: só registra a decisão no Controle.xlsx, não move nada
+    copiar: bool                # true: COPIA para o destino e deixa o original na pasta de entrada (testes)
 
     # Armazenamento local (monte como volume no servidor para não perder)
     dados_dir: str
@@ -74,6 +75,7 @@ def carregar() -> Config:
         segundos_estabilizar=int(_get("SEGUNDOS_ESTABILIZAR", "30")),
         catalogo_minutos=int(_get("CATALOGO_MINUTOS", "15")),
         simulacao=_bool("SIMULACAO", "true"),
+        copiar=_bool("COPIAR", "false"),
         dados_dir=dados,
         servicos_json=_get("SERVICOS_JSON", os.path.join(dados, "servicos.json")),
         clientes_extra_csv=_get("CLIENTES_EXTRA_CSV", os.path.join(dados, "clientes_extra.csv")),
