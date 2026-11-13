@@ -193,6 +193,8 @@ def main():
                     break
                 if not arq.nome.lower().endswith(EXTENSOES):
                     continue
+                if arq.modificado < cfg.processar_desde:
+                    continue  # chegou antes da ativação: não mexe
                 if (cfg.simulacao or cfg.copiar) and arq.content_hash in ja_simulados:
                     continue
                 if not dbx.estavel(arq, cfg.segundos_estabilizar):

@@ -14,6 +14,16 @@ def _bool(name: str, default: str = "false") -> bool:
     return _get(name, default).strip().lower() in ("1", "true", "sim", "yes", "on")
 
 
+def _instante(texto: str) -> float:
+    """'2026-11-13T15:00:00Z' -> timestamp. Vazio -> 0 (processa todos)."""
+    from datetime import datetime, timezone
+    t = (texto or "").strip()
+    if not t:
+        return 0.0
+    dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+
 @dataclass(frozen=True)
 class Config:
     # Dropbox (use refresh token: não expira, ao contrário do token curto)
@@ -42,6 +52,7 @@ class Config:
     catalogo_minutos: int
     simulacao: bool             # true: só registra a decisão no Controle.xlsx, não move nada
     copiar: bool                # true: COPIA para o destino e deixa o original na pasta de entrada (testes)
+    processar_desde: float      # só processa arquivos chegados depois deste momento (0 = todos)
 
     # Armazenamento local (monte como volume no servidor para não perder)
     dados_dir: str
@@ -76,6 +87,7 @@ def carregar() -> Config:
         catalogo_minutos=int(_get("CATALOGO_MINUTOS", "15")),
         simulacao=_bool("SIMULACAO", "true"),
         copiar=_bool("COPIAR", "false"),
+        processar_desde=_instante(_get("PROCESSAR_DESDE", "")),
         dados_dir=dados,
         servicos_json=_get("SERVICOS_JSON", os.path.join(dados, "servicos.json")),
         clientes_extra_csv=_get("CLIENTES_EXTRA_CSV", os.path.join(dados, "clientes_extra.csv")),

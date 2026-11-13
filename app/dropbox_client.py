@@ -2,12 +2,18 @@
 import logging
 import time
 from dataclasses import dataclass
+from datetime import timezone
 
 import dropbox
 from dropbox.exceptions import ApiError
 from dropbox.files import FileMetadata, FolderMetadata, WriteMode
 
 log = logging.getLogger("docflow.dropbox")
+
+
+def _utc(dt) -> float:
+    """O Dropbox devolve a data em UTC sem fuso: marca como UTC antes de converter (evita erro de 1h no verão)."""
+    return dt.replace(tzinfo=timezone.utc).timestamp() if dt.tzinfo is None else dt.timestamp()
 
 
 @dataclass
@@ -66,7 +72,7 @@ class DropboxClient:
                             caminho=entry.path_display,
                             nome=entry.name,
                             tamanho=entry.size,
-                            modificado=entry.server_modified.timestamp(),
+                            modificado=_utc(entry.server_modified),
                             content_hash=entry.content_hash or "",
                         )
                     )
@@ -104,7 +110,7 @@ class DropboxClient:
             for entry in res.entries:
                 if isinstance(entry, FileMetadata):
                     itens.append(ArquivoRemoto(entry.path_display, entry.name, entry.size,
-                                               entry.server_modified.timestamp(), entry.content_hash or ""))
+                                               _utc(entry.server_modified), entry.content_hash or ""))
             if not res.has_more:
                 break
             res = self.dbx.files_list_folder_continue(res.cursor)
