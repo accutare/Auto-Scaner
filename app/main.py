@@ -75,6 +75,11 @@ def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Con
         log.info("Duplicado: %s", arq.nome)
         return {"arquivo": arq.nome, "status": status, "destino": final, "motivo": "duplicado"}
 
+    destino_fixo = getattr(cfg, "destino_fixo", "")
+    if destino_fixo:
+        return _processar_destino_fixo(arq, cfg, dbx, extrator, registro, ctx, conteudo, hash_arq,
+                                       hash_curto, destino_fixo, mover)
+
     ext = extrator.extrair(arq.nome, conteudo, ctx.sistema, ctx.esquema)
     d = decidir(ext, arq.nome, ctx.catalogo, ctx.regras, cfg.confianca_minima,
                 cfg.pasta_clientes, cfg.pasta_revisar, hash_curto, dbx.listar_pastas)
@@ -98,6 +103,36 @@ def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Con
     return {"arquivo": arq.nome, "status": status, "seria": d.status, "pais": d.pais, "cliente": d.cliente,
             "dono": ext.dono_ou_diretor, "servico": d.servico, "tipo": d.tipo, "destino": final,
             "motivo": d.motivo, "resumo": ext.resumo, "confianca": ext.confianca}
+
+
+def _processar_destino_fixo(arq, cfg, dbx, extrator, registro, ctx, conteudo, hash_arq, hash_curto,
+                            destino_fixo, mover) -> dict:
+    """Teste com caminho definido pela equipe: o arquivo vai para <pasta de clientes>/<destino fixo>/,
+    com o nome original. A IA lê o documento só para registrar no Controle o que ela teria sugerido;
+    se a IA falhar, o arquivo vai para o destino do mesmo jeito."""
+    destino = f"{cfg.pasta_clientes}/{destino_fixo}/{arq.nome}"
+    ext, sugestao = None, ""
+    try:
+        ext = extrator.extrair(arq.nome, conteudo, ctx.sistema, ctx.esquema)
+        d = decidir(ext, arq.nome, ctx.catalogo, ctx.regras, cfg.confianca_minima,
+                    cfg.pasta_clientes, cfg.pasta_revisar, hash_curto, dbx.listar_pastas)
+        sugestao = f"a IA sugeriu: {d.caminho_destino}" + (f" ({d.motivo})" if d.motivo else "")
+    except Exception as e:  # noqa: BLE001
+        sugestao = f"a IA não conseguiu ler: {type(e).__name__}: {e}"[:1500]
+    final = mover(destino)
+    status = "SIMULADO" if cfg.simulacao else "OK"
+    registro.inserir(
+        status=status, pais=ext.pais if ext else None, cliente=ext.nome_cliente if ext else None,
+        dono=ext.dono_ou_diretor if ext else None, servico=ext.servico if ext else None,
+        tipo=ext.tipo_documento if ext else None, data_documento=ext.data_documento if ext else None,
+        fornecedor=ext.fornecedor_ou_emissor if ext else None, valor_total=ext.valor_total if ext else None,
+        moeda=ext.moeda if ext else None, numero_documento=ext.numero_documento if ext else None,
+        confianca=ext.confianca if ext else None, motivo=f"destino fixo do teste; {sugestao}",
+        resumo=ext.resumo if ext else None, arquivo_original=arq.nome, caminho_final=final,
+        caminho_original=arq.caminho, hash_arquivo=hash_arq,
+    )
+    log.info("%s -> %s (destino fixo)", arq.nome, final)
+    return {"arquivo": arq.nome, "status": status, "seria": "OK", "destino": final, "motivo": sugestao}
 
 
 def mover_para_erros(arq, cfg, dbx, registro, motivo):

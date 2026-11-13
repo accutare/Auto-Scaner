@@ -53,6 +53,7 @@ class Config:
     simulacao: bool             # true: só registra a decisão no Controle.xlsx, não move nada
     copiar: bool                # true: COPIA para o destino e deixa o original na pasta de entrada (testes)
     processar_desde: float      # só processa arquivos chegados depois deste momento (0 = todos)
+    destino_fixo: str           # teste: caminho fixo (dentro da pasta de clientes) para onde vai todo arquivo
 
     # Armazenamento local (monte como volume no servidor para não perder)
     dados_dir: str
@@ -88,6 +89,7 @@ def carregar() -> Config:
         simulacao=_bool("SIMULACAO", "true"),
         copiar=_bool("COPIAR", "false"),
         processar_desde=_instante(_get("PROCESSAR_DESDE", "")),
+        destino_fixo=_get("DESTINO_FIXO", "").strip().strip("/"),
         dados_dir=dados,
         servicos_json=_get("SERVICOS_JSON", os.path.join(dados, "servicos.json")),
         clientes_extra_csv=_get("CLIENTES_EXTRA_CSV", os.path.join(dados, "clientes_extra.csv")),

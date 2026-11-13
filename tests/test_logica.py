@@ -448,6 +448,37 @@ class TestLimpeza(unittest.TestCase):
         self.assertTrue(any(l.startswith("ATENÇÃO") for l in rel))
 
 
+class TestDestinoFixo(unittest.TestCase):
+    def setUp(self):
+        self.reg = Registro(os.path.join(tempfile.mkdtemp(), "t.db"))
+        self.ctx = Contexto(montar_catalogo(RAIZ, listar_pastas, []), servmod.carregar(None))
+
+    def cfg(self):
+        class C(FakeCfg):
+            copiar = True
+            destino_fixo = "AN1000/AN1000BL/11"
+        return C
+
+    def test_vai_para_o_caminho_definido_com_nome_original(self):
+        dbx = FakeDropboxArvore({"/Scans/Scan 001.pdf": b"%PDF x"})
+        arq = ArquivoRemoto("/Scans/Scan 001.pdf", "Scan 001.pdf", 6, 0, "h")
+        r = processar_arquivo(arq, self.cfg(), dbx, FakeExtrator(resp()), self.reg, self.ctx)
+        self.assertEqual(r["destino"], f"{NOVA}/AN1000/AN1000BL/11/Scan 001.pdf")
+        self.assertIn("/Scans/Scan 001.pdf", dbx.arquivos)            # original continua (cópia)
+        self.assertIn(f"{NOVA}/AN1000/AN1000BL/11/Scan 001.pdf", dbx.arquivos)
+        self.assertIn("a IA sugeriu", r["motivo"])
+
+    def test_se_a_ia_falhar_o_arquivo_vai_mesmo_assim(self):
+        class Quebra:
+            def extrair(self, *a):
+                raise RuntimeError("400")
+        dbx = FakeDropboxArvore({"/Scans/b.pdf": b"%PDF y"})
+        arq = ArquivoRemoto("/Scans/b.pdf", "b.pdf", 6, 0, "h")
+        r = processar_arquivo(arq, self.cfg(), dbx, Quebra(), self.reg, self.ctx)
+        self.assertEqual(r["destino"], f"{NOVA}/AN1000/AN1000BL/11/b.pdf")
+        self.assertIn("não conseguiu ler", r["motivo"])
+
+
 class TestModoCopia(unittest.TestCase):
     def test_copia_e_deixa_o_original(self):
         class CfgCopia(FakeCfg):
