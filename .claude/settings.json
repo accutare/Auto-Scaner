@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git push origin claude/cool-lovelace-fqoikg)",
+      "Bash(git push -q origin claude/cool-lovelace-fqoikg)",
+      "Bash(git push -u origin claude/cool-lovelace-fqoikg)"
+    ]
+  }
+}
