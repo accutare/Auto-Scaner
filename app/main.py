@@ -21,6 +21,8 @@ from .catalogo import carregar_extras, montar_catalogo
 from .dropbox_client import ArquivoRemoto, DropboxClient
 from .extractor import Extrator, montar_esquema, montar_sistema
 from .monitor import ping_falha, ping_ok
+from .destino_codigo import corrigir_pastas_literais
+from .destino_codigo import resolver as resolver_destino
 from .organizador import decidir
 from .registro import Registro
 
@@ -107,10 +109,14 @@ def processar_arquivo(arq: ArquivoRemoto, cfg, dbx, extrator, registro, ctx: Con
 
 def _processar_destino_fixo(arq, cfg, dbx, extrator, registro, ctx, conteudo, hash_arq, hash_curto,
                             destino_fixo, mover) -> dict:
-    """Teste com caminho definido pela equipe: o arquivo vai para <pasta de clientes>/<destino fixo>/,
-    com o nome original. A IA lê o documento só para registrar no Controle o que ela teria sugerido;
+    """Teste com caminho definido pela equipe por CÓDIGOS (ex.: AN1000/AN1000BL/11): o arquivo vai para as
+    pastas existentes que começam com esses códigos, com o nome original. Se não achar, vai para revisão. A IA lê o documento só para registrar no Controle o que ela teria sugerido;
     se a IA falhar, o arquivo vai para o destino do mesmo jeito."""
-    destino = f"{cfg.pasta_clientes}/{destino_fixo}/{arq.nome}"
+    pasta_real, problema = resolver_destino(dbx.listar_pastas, cfg.pasta_clientes, destino_fixo)
+    if pasta_real:
+        destino = f"{pasta_real}/{arq.nome}"
+    else:
+        destino = f"{cfg.pasta_revisar}/[{hash_curto}] {arq.nome}"
     ext, sugestao = None, ""
     try:
         ext = extrator.extrair(arq.nome, conteudo, ctx.sistema, ctx.esquema)
@@ -120,7 +126,9 @@ def _processar_destino_fixo(arq, cfg, dbx, extrator, registro, ctx, conteudo, ha
     except Exception as e:  # noqa: BLE001
         sugestao = f"a IA não conseguiu ler: {type(e).__name__}: {e}"[:1500]
     final = mover(destino)
-    status = "SIMULADO" if cfg.simulacao else "OK"
+    status = "SIMULADO" if cfg.simulacao else ("OK" if pasta_real else "PENDENTE")
+    if problema:
+        sugestao = f"{problema}; {sugestao}"
     registro.inserir(
         status=status, pais=ext.pais if ext else None, cliente=ext.nome_cliente if ext else None,
         dono=ext.dono_ou_diretor if ext else None, servico=ext.servico if ext else None,
@@ -132,7 +140,8 @@ def _processar_destino_fixo(arq, cfg, dbx, extrator, registro, ctx, conteudo, ha
         caminho_original=arq.caminho, hash_arquivo=hash_arq,
     )
     log.info("%s -> %s (destino fixo)", arq.nome, final)
-    return {"arquivo": arq.nome, "status": status, "seria": "OK", "destino": final, "motivo": sugestao}
+    return {"arquivo": arq.nome, "status": status, "seria": "OK" if pasta_real else "PENDENTE",
+            "destino": final, "motivo": sugestao}
 
 
 def mover_para_erros(arq, cfg, dbx, registro, motivo):
@@ -191,6 +200,11 @@ def main():
     if not cfg.simulacao:
         for p in (cfg.pasta_revisar, cfg.pasta_erros, cfg.pasta_controle):
             dbx.garantir_pasta_recursiva(p)
+        if cfg.destino_fixo:
+            try:
+                corrigir_pastas_literais(dbx, cfg.pasta_clientes, cfg.destino_fixo)
+            except Exception:  # noqa: BLE001
+                log.exception("Não consegui corrigir as pastas criadas por engano")
 
     signal.signal(signal.SIGTERM, _sinal)
     signal.signal(signal.SIGINT, _sinal)

@@ -448,35 +448,109 @@ class TestLimpeza(unittest.TestCase):
         self.assertTrue(any(l.startswith("ATENÇÃO") for l in rel))
 
 
+class DropboxComPastas(FakeDropboxArvore):
+    """Lista pastas a partir de pastas vazias conhecidas + caminhos dos arquivos."""
+
+    def __init__(self, arquivos, pastas=()):
+        super().__init__(arquivos)
+        self.vazias = set(pastas)
+
+    def _todas(self):
+        todas = set(self.vazias)
+        for c in list(self.arquivos) + list(self.vazias):
+            partes = c.strip("/").split("/")
+            for i in range(1, len(partes)):
+                todas.add("/" + "/".join(partes[:i]))
+        return todas
+
+    def listar_pastas(self, pasta):
+        p = pasta.rstrip("/")
+        return sorted({c[len(p) + 1:].split("/")[0] for c in self._todas() if c.startswith(p + "/")})
+
+    def existe(self, c):
+        return c in self.arquivos or c in self._todas()
+
+    def apagar(self, c):
+        super().apagar(c)
+        self.vazias = {v for v in self.vazias if not (v == c or v.startswith(c + "/"))}
+
+
+CLI = f"{NOVA}/AN1000 - Adalberto Neto/AN1000BL-Bizisc Ltd"
+PASTAS_CLIENTE = [f"{CLI}/1-!Permanent Data", f"{CLI}/10-Year End", f"{CLI}/11-Other", f"{NOVA}/Accurate UK"]
+
+
 class TestDestinoFixo(unittest.TestCase):
     def setUp(self):
         self.reg = Registro(os.path.join(tempfile.mkdtemp(), "t.db"))
         self.ctx = Contexto(montar_catalogo(RAIZ, listar_pastas, []), servmod.carregar(None))
 
-    def cfg(self):
+    def cfg(self, destino="AN1000/AN1000BL/11"):
         class C(FakeCfg):
             copiar = True
-            destino_fixo = "AN1000/AN1000BL/11"
+            destino_fixo = destino
         return C
 
-    def test_vai_para_o_caminho_definido_com_nome_original(self):
-        dbx = FakeDropboxArvore({"/Scans/Scan 001.pdf": b"%PDF x"})
+    def test_encontra_as_pastas_pelo_codigo(self):
+        from app.destino_codigo import resolver
+        dbx = DropboxComPastas({}, PASTAS_CLIENTE + [f"{NOVA}/AN1000/AN1000BL/11"])
+        self.assertEqual(resolver(dbx.listar_pastas, NOVA, "AN1000/AN1000BL/11"), (f"{CLI}/11-Other", None))
+        self.assertEqual(resolver(dbx.listar_pastas, NOVA, "AN1000/AN1000BL/1"), (f"{CLI}/1-!Permanent Data", None))
+        caminho, motivo = resolver(dbx.listar_pastas, NOVA, "AN2000/X/1")
+        self.assertIsNone(caminho)
+        self.assertIn("AN2000", motivo)
+
+    def test_copia_para_a_pasta_real_com_nome_original(self):
+        dbx = DropboxComPastas({"/Scans/Scan 001.pdf": b"%PDF x"}, PASTAS_CLIENTE)
         arq = ArquivoRemoto("/Scans/Scan 001.pdf", "Scan 001.pdf", 6, 0, "h")
         r = processar_arquivo(arq, self.cfg(), dbx, FakeExtrator(resp()), self.reg, self.ctx)
-        self.assertEqual(r["destino"], f"{NOVA}/AN1000/AN1000BL/11/Scan 001.pdf")
+        self.assertEqual(r["destino"], f"{CLI}/11-Other/Scan 001.pdf")
         self.assertIn("/Scans/Scan 001.pdf", dbx.arquivos)            # original continua (cópia)
-        self.assertIn(f"{NOVA}/AN1000/AN1000BL/11/Scan 001.pdf", dbx.arquivos)
-        self.assertIn("a IA sugeriu", r["motivo"])
+        self.assertFalse(any(k.startswith(f"{NOVA}/AN1000/") for k in dbx.arquivos))  # não cria pasta literal
+
+    def test_codigo_inexistente_vai_para_revisar(self):
+        dbx = DropboxComPastas({"/Scans/b.pdf": b"%PDF y"}, PASTAS_CLIENTE)
+        arq = ArquivoRemoto("/Scans/b.pdf", "b.pdf", 6, 0, "h")
+        r = processar_arquivo(arq, self.cfg("AN9999/X/11"), dbx, FakeExtrator(resp()), self.reg, self.ctx)
+        self.assertTrue(r["destino"].startswith("/Docflow/Revisar/"))
+        self.assertEqual(r["status"], "PENDENTE")
+        self.assertIn("AN9999", r["motivo"])
 
     def test_se_a_ia_falhar_o_arquivo_vai_mesmo_assim(self):
         class Quebra:
             def extrair(self, *a):
                 raise RuntimeError("400")
-        dbx = FakeDropboxArvore({"/Scans/b.pdf": b"%PDF y"})
+        dbx = DropboxComPastas({"/Scans/b.pdf": b"%PDF y"}, PASTAS_CLIENTE)
         arq = ArquivoRemoto("/Scans/b.pdf", "b.pdf", 6, 0, "h")
         r = processar_arquivo(arq, self.cfg(), dbx, Quebra(), self.reg, self.ctx)
-        self.assertEqual(r["destino"], f"{NOVA}/AN1000/AN1000BL/11/b.pdf")
+        self.assertEqual(r["destino"], f"{CLI}/11-Other/b.pdf")
         self.assertIn("não conseguiu ler", r["motivo"])
+
+    def test_corrige_as_pastas_criadas_por_engano(self):
+        from app.destino_codigo import corrigir_pastas_literais
+        base = "/TESTE - Clientes"
+        cli = f"{base}/AN1000 - Adalberto Neto/AN1000BL-Bizisc Ltd"
+        a1 = "DOC131126-13112026165715.pdf"
+        a2 = "DOC131126-13112026165915.pdf"
+        dbx = DropboxComPastas({f"{base}/AN1000/AN1000BL/11/{a1}": b"1",
+                                f"{base}/AN1000/AN1000BL/11/{a2}": b"2",
+                                f"/scans/{a1}": b"1", f"/scans/{a2}": b"2"},
+                               [f"{cli}/1-!Permanent Data", f"{cli}/11-Other", f"{base}/Accurate UK"])
+        corrigir_pastas_literais(dbx, base, "AN1000/AN1000BL/11")
+        self.assertEqual(dbx.arquivos[f"{cli}/11-Other/{a1}"], b"1")
+        self.assertEqual(dbx.arquivos[f"{cli}/11-Other/{a2}"], b"2")
+        self.assertEqual(dbx.apagados, [f"{base}/AN1000"])
+        self.assertIn(f"/scans/{a1}", dbx.arquivos)
+        self.assertNotIn("AN1000", dbx.listar_pastas(base))
+        # roda de novo sem fazer nada
+        corrigir_pastas_literais(dbx, base, "AN1000/AN1000BL/11")
+        self.assertEqual(dbx.apagados, [f"{base}/AN1000"])
+
+    def test_correcao_so_age_em_pasta_de_teste(self):
+        from app.destino_codigo import corrigir_pastas_literais
+        dbx = DropboxComPastas({"/Clientes/AN1000/AN1000BL/11/a.pdf": b"a"},
+                               ["/Clientes/AN1000 - X/AN1000BL-Y/11-Other"])
+        self.assertEqual(corrigir_pastas_literais(dbx, "/Clientes", "AN1000/AN1000BL/11"), [])
+        self.assertEqual(dbx.apagados, [])
 
 
 class TestModoCopia(unittest.TestCase):
