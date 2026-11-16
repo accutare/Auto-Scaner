@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Chamado pelo cron a cada 5 minutos. Baixa versão/configuração nova do GitHub e aplica:
+# Chamado pelo cron a cada 1 minuto. Baixa versão/configuração nova do GitHub e aplica:
 #   WEB=sim        -> mantém o app do scanner no ar (web + HTTPS) e libera as portas 80/443 no firewall;
 #   AUTOMATICO=sim -> mantém a leitura automática dos scans ligada; nao -> desligada;
 #   com AUTOMATICO=nao, LIMPEZA_RODADA e TESTE_RODADA disparam uma limpeza / um teste quando mudam.
@@ -7,6 +7,13 @@ set -euo pipefail
 cd /opt/docflow
 exec 9>/var/lock/docflow-atualizar.lock
 flock -n 9 || exit 0
+
+# Confere a cada 1 minuto (o próprio script mantém o agendamento assim)
+CRON="* * * * * root /opt/docflow/deploy/atualizar.sh >> /var/log/docflow-atualizar.log 2>&1"
+if [ "$(cat /etc/cron.d/docflow-atualizar 2>/dev/null)" != "$CRON" ]; then
+  echo "$CRON" > /etc/cron.d/docflow-atualizar
+  chmod 644 /etc/cron.d/docflow-atualizar
+fi
 
 git fetch -q origin
 CODIGO=""
