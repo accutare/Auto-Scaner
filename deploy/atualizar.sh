@@ -7,6 +7,8 @@ set -euo pipefail
 cd /opt/docflow
 exec 9>/var/lock/docflow-atualizar.lock
 flock -n 9 || exit 0
+# Se algo falhar, registra e manda o relatório para o Dropbox antes de sair
+trap 'echo "$(date -Is) ERRO na linha $LINENO"; bash /opt/docflow/deploy/status.sh || true' ERR
 
 # Confere a cada 1 minuto (o próprio script mantém o agendamento assim)
 CRON="* * * * * root /opt/docflow/deploy/atualizar.sh >> /var/log/docflow-atualizar.log 2>&1"
@@ -67,4 +69,9 @@ else
     echo "$(date -Is) rodada de teste $RODADA"
     bash deploy/rodar-teste.sh
   fi
+fi
+
+# Relatório no Dropbox: depois de qualquer mudança e, fora isso, a cada 10 minutos
+if [ -n "$MUDOU" ] || [ $(( $(date +%-M) % 10 )) -eq 0 ]; then
+  bash deploy/status.sh || true
 fi
