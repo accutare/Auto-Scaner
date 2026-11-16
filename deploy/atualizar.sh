@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Chamado pelo cron a cada 5 minutos. Baixa versão/configuração nova do GitHub e:
-#   AUTOMATICO=sim -> mantém o programa ligado (reinicia se mudou algo);
-#   AUTOMATICO=nao -> mantém desligado; se TESTE_RODADA mudou, processa 1 arquivo.
+# Chamado pelo cron a cada 5 minutos. Baixa versão/configuração nova do GitHub e aplica:
+#   WEB=sim        -> mantém o app do scanner no ar (web + HTTPS) e libera as portas 80/443 no firewall;
+#   AUTOMATICO=sim -> mantém a leitura automática dos scans ligada; nao -> desligada;
+#   com AUTOMATICO=nao, LIMPEZA_RODADA e TESTE_RODADA disparam uma limpeza / um teste quando mudam.
 set -euo pipefail
 cd /opt/docflow
 exec 9>/var/lock/docflow-atualizar.lock
@@ -16,17 +17,28 @@ if [ "$(git rev-parse HEAD)" != "$(git rev-parse '@{u}')" ]; then
 fi
 CONFIG=$(bash deploy/aplicar-config.sh)
 valor() { grep -E "^$1=" .env | tail -1 | cut -d= -f2-; }
+MUDOU="$CODIGO$CONFIG"
 [ -n "$CODIGO" ] && docker compose build -q
 
+rodando() { [ -n "$(docker compose ps -q "$1" 2>/dev/null)" ]; }
+
+if [ "$(valor WEB)" = "sim" ]; then
+  if command -v ufw >/dev/null 2>&1; then ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; fi
+  if [ -n "$MUDOU" ] || ! rodando web || ! rodando caddy; then
+    echo "$(date -Is) app do scanner: ligando/atualizando"
+    docker compose up -d web caddy
+  fi
+fi
+
 if [ "$(valor AUTOMATICO)" = "sim" ]; then
-  if [ -n "$CODIGO$CONFIG" ] || [ -z "$(docker compose ps -q docflow)" ]; then
-    echo "$(date -Is) ligando/atualizando o modo automático"
-    docker compose up -d
+  if [ -n "$MUDOU" ] || ! rodando docflow; then
+    echo "$(date -Is) leitura automática: ligando/atualizando"
+    docker compose up -d docflow
   fi
 else
-  if [ -n "$(docker compose ps -q docflow)" ]; then
-    echo "$(date -Is) desligando o modo automático"
-    docker compose stop
+  if rodando docflow; then
+    echo "$(date -Is) leitura automática: desligando"
+    docker compose stop docflow
   fi
   mkdir -p dados
   LIMPEZA=$(valor LIMPEZA_RODADA)

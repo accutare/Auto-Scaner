@@ -571,5 +571,40 @@ class TestModoCopia(unittest.TestCase):
         self.assertIsNone(processar_arquivo(arq, CfgCopia, dbx, FakeExtrator(resp()), reg, ctx))
 
 
+
+class TestComandos(unittest.TestCase):
+    def test_interpretar(self):
+        from app.comandos import interpretar
+        for texto in ("5715 > AN1000 > AN1000BL > 11", "5715 AN1000 AN1000BL 11",
+                      "manda o 5715 pra AN1000 / AN1000BL / 11"):
+            p = interpretar(texto)
+            self.assertEqual((p.final, p.codigos), ("5715", ["AN1000", "AN1000BL", "11"]), texto)
+        self.assertIsNone(interpretar("bom dia"))
+        self.assertIsNone(interpretar("5715"))
+
+    def _scans(self, *nomes):
+        return [ArquivoRemoto(f"/scans/{n}", n, 1, 0, "h") for n in nomes]
+
+    def test_resolver_ok_ambiguo_e_codigo_errado(self):
+        from app.comandos import interpretar, resolver_pedido
+        dbx = DropboxComPastas({}, PASTAS_CLIENTE)
+        scans = self._scans("DOC-165715.pdf", "DOC-170615.pdf", "DOC-171205.pdf")
+        r = resolver_pedido(interpretar("5715 > AN1000 > AN1000BL > 11"), scans, NOVA, dbx.listar_pastas)
+        self.assertTrue(r.ok)
+        self.assertEqual(r.destino, f"{CLI}/11-Other")
+        self.assertEqual(r.arquivo["nome"], "DOC-165715.pdf")
+        r = resolver_pedido(interpretar("15 > AN1000 > AN1000BL > 11"), scans, NOVA, dbx.listar_pastas)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.tipo_opcoes, "arquivo")
+        self.assertEqual(len(r.opcoes), 2)
+        r = resolver_pedido(interpretar("1205 > AN1000 > AN1000BX > 11"), scans, NOVA, dbx.listar_pastas)
+        self.assertFalse(r.ok)
+        self.assertEqual((r.tipo_opcoes, r.nivel), ("pasta", 1))
+        self.assertIn("AN1000BL-Bizisc Ltd", r.opcoes)
+        r = resolver_pedido(interpretar("9999 > AN1000"), scans, NOVA, dbx.listar_pastas)
+        self.assertFalse(r.ok)
+        self.assertIn("9999", r.mensagem)
+
+
 if __name__ == "__main__":
     unittest.main()
