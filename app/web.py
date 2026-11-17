@@ -5,8 +5,10 @@ gerada no primeiro uso (guardada em /data/app_senha.txt e enviada para o Dropbox
 Regras: só move depois de "Mover agora", nunca cria pasta, nunca exclui nada.
 """
 import hashlib
+import json
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timezone
@@ -90,7 +92,7 @@ def pagina():
 
 @app.get("/api/scans", dependencies=[Depends(autenticar)])
 def scans():
-    return [{"nome": a.nome, "hora": datetime.fromtimestamp(a.modificado, timezone.utc).astimezone()
+    return [{"nome": a.nome, "caminho": a.caminho, "hora": datetime.fromtimestamp(a.modificado, timezone.utc).astimezone()
              .strftime("%d/%m %H:%M")} for a in _scans()]
 
 
@@ -127,6 +129,89 @@ def mover(c: Confirmacao):
         log.exception("Não consegui atualizar o Controle.xlsx")
     log.info("Movido pelo app: %s -> %s", r.arquivo["caminho"], final)
     return {"ok": True, "mensagem": "Movido.", "final": final, "caminho": r.caminho}
+
+
+# ---------- Escolher a pasta pelo mapa (navegando ou buscando pelo nome) ----------
+RAIZ_MAPA = os.environ.get("MAPA_RAIZ", "/!Accurate Complete Accounting Ltd - data files").rstrip("/")
+IGNORAR_MAPA = {i.strip().lower() for i in os.environ.get("MAPA_IGNORAR", "ZZBackups").split(";") if i.strip()}
+
+
+def _rel_valido(rel: str) -> str:
+    rel = (rel or "").strip().strip("/")
+    partes = [p for p in rel.split("/") if p]
+    if any(p in (".", "..") for p in partes):
+        raise HTTPException(400, "Caminho inválido")
+    if partes and partes[0].lower() in IGNORAR_MAPA:
+        raise HTTPException(400, "Pasta fora do mapa")
+    return "/".join(partes)
+
+
+@app.get("/api/pastas", dependencies=[Depends(autenticar)])
+def pastas(caminho: str = ""):
+    rel = _rel_valido(caminho)
+    nomes = dbx.listar_pastas(f"{RAIZ_MAPA}/{rel}" if rel else RAIZ_MAPA)
+    if not rel:
+        nomes = [n for n in nomes if n.lower() not in IGNORAR_MAPA]
+    return {"caminho": rel, "pastas": nomes}
+
+
+def _normalizar(t: str) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", t).split())
+
+
+@app.get("/api/buscar", dependencies=[Depends(autenticar)])
+def buscar(q: str = ""):
+    palavras = _normalizar(q).split()
+    arq = os.path.join(cfg.dados_dir, "mapa.json")
+    if not palavras:
+        return {"resultados": []}
+    if not os.path.exists(arq):
+        return {"resultados": [], "aviso": "O mapa de pastas ainda está sendo gerado. Use a navegação por enquanto."}
+    with open(arq, encoding="utf-8") as f:
+        mapa = json.load(f)
+    res = []
+    for l in mapa.get("pastas", []):
+        alvo = _normalizar(l["caminho"])
+        if all(p in alvo for p in palavras):
+            # pastas cujo próprio nome bate vêm primeiro, depois as mais curtas
+            nome = _normalizar(l["pasta"])
+            res.append((0 if any(p in nome for p in palavras) else 1, l["nivel"], l["caminho"]))
+    res.sort()
+    return {"resultados": [r[2] for r in res[:40]]}
+
+
+class Destino(BaseModel):
+    arquivo: str
+    destino: str
+
+
+@app.post("/api/mover_pasta", dependencies=[Depends(autenticar)])
+def mover_pasta(d: Destino):
+    rel = _rel_valido(d.destino)
+    if not rel:
+        raise HTTPException(400, "Escolha uma pasta")
+    scans_atuais = {a.caminho: a for a in _scans()}
+    arq = scans_atuais.get(d.arquivo)
+    if not arq:
+        return {"ok": False, "mensagem": "Esse scan não está mais na pasta de scans. Atualize a lista."}
+    pasta = f"{RAIZ_MAPA}/{rel}"
+    if not dbx.existe(pasta):
+        return {"ok": False, "mensagem": "Essa pasta não existe mais. Escolha de novo."}
+    final = dbx.mover(arq.caminho, f"{pasta}/{arq.nome}")
+    partes = rel.split("/")
+    registro.inserir(
+        status="OK", cliente=partes[1] if len(partes) > 1 else partes[0], servico=" / ".join(partes[2:]) or None,
+        motivo="escolhido no mapa do app", arquivo_original=arq.nome, caminho_original=arq.caminho,
+        caminho_final=final, hash_arquivo=arq.content_hash or hashlib.sha256(final.encode()).hexdigest(),
+    )
+    try:
+        dbx.enviar(f"{cfg.pasta_controle}/Controle.xlsx", registro.exportar_excel())
+    except Exception:  # noqa: BLE001
+        log.exception("Não consegui atualizar o Controle.xlsx")
+    log.info("Movido pelo mapa: %s -> %s", arq.caminho, final)
+    return {"ok": True, "final": final, "caminho": partes}
 
 
 @app.get("/saude")

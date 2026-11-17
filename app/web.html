@@ -74,6 +74,27 @@ form { border-top: 1px solid var(--line); padding: 10px; display: grid; gap: 6px
 .hint { font-size: .76rem; color: var(--muted); }
 .hint code { font-family: var(--f-mono); color: var(--ink); }
 @media (prefers-reduced-motion: no-preference) { .m { animation: in .18s ease-out; } @keyframes in { from { transform: translateY(4px); opacity: .6; } } }
+
+.chat { position: relative; }
+#picker { position: absolute; inset: 0; background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; z-index: 2; }
+.pk-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-start; }
+.pk-head h3 { margin: 0; font-size: .95rem; }
+.pk-head small { display: block; font: .8rem var(--f-mono); color: var(--muted); overflow-wrap: anywhere; }
+.pk-head .b { margin-left: auto; }
+.pk-busca { padding: 10px 14px 0; }
+#busca { width: 100%; font: .95rem var(--f-body); padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+#busca:focus { outline: 2px solid var(--accent); }
+#trilha { padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: .82rem; border-bottom: 1px solid var(--line); }
+#trilha button { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 2px 4px; border-radius: 4px; }
+#trilha button:hover { background: var(--accent-soft); }
+#trilha i { font-style: normal; color: var(--muted); }
+#pastas { flex: 1; overflow-y: auto; padding: 8px; display: grid; gap: 2px; align-content: start; min-height: 0; }
+.pasta { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 7px; padding: 8px 10px; color: var(--ink); font: .9rem var(--f-body); cursor: pointer; }
+.pasta:hover, .pasta:focus-visible { background: var(--accent-soft); border-color: var(--accent); outline: none; }
+.pasta::before { content: ""; width: 18px; height: 14px; flex: none; border-radius: 2px 4px 3px 3px; background: var(--accent); opacity: .75; }
+.pasta small { color: var(--muted); font-size: .76rem; display: block; overflow-wrap: anywhere; }
+.pk-pe { border-top: 1px solid var(--line); padding: 10px 14px; display: grid; gap: 8px; }
+.pk-pe .destino { font: .82rem var(--f-mono); overflow-wrap: anywhere; }
 </style>
 </head><body>
 <div class="app">
@@ -87,13 +108,24 @@ form { border-top: 1px solid var(--line); padding: 10px; display: grid; gap: 6px
       <div class="q-list" id="qlist"><div class="empty">Carregando os scans...</div></div>
     </section>
     <section class="chat" aria-label="Comandos">
+
+      <div id="picker" hidden>
+        <div class="pk-head"><div><h3>Para onde vai este scan?</h3><small id="pkArquivo"></small></div><button class="b" type="button" id="pkFechar">Fechar</button></div>
+        <div class="pk-busca"><input id="busca" autocomplete="off" placeholder="Buscar pelo nome: empresa, dono, pasta..." aria-label="Buscar pasta"></div>
+        <nav id="trilha" aria-label="Caminho"></nav>
+        <div id="pastas"></div>
+        <div class="pk-pe">
+          <div class="destino" id="pkDestino">Escolha uma pasta.</div>
+          <div class="acts" id="pkAcoes"><button class="b p" type="button" id="pkMover" disabled>Mover para cá</button></div>
+        </div>
+      </div>
       <div class="msgs" id="msgs" aria-live="polite"></div>
       <form id="f">
         <div class="row">
           <input id="cmd" autocomplete="off" placeholder="5715 > AN1000 > AN1000BL > 11" aria-label="Comando">
           <button class="b p" type="submit" id="enviar">Enviar</button>
         </div>
-        <div class="hint">Formato: <code>final do arquivo &gt; código &gt; código &gt; código</code>. Toque num scan da lista para preencher o começo.</div>
+        <div class="hint">Toque num scan da lista para escolher a pasta no mapa. Também dá para escrever: <code>5715 &gt; AN1000 &gt; AN1000BL &gt; 11</code>.</div>
       </form>
     </section>
   </div>
@@ -126,9 +158,9 @@ async function fila() {
     $("#qlist").innerHTML = scans.length ? scans.map(s => {
       const ponto = s.nome.lastIndexOf("."), base = ponto > 0 ? s.nome.slice(0, ponto) : s.nome, ext = ponto > 0 ? s.nome.slice(ponto) : "";
       const fim = base.slice(-4);
-      return `<button class="scan" data-fim="${esc(fim)}"><span class="thumb"></span><span><b>${esc(base.slice(0, -4))}<em>${esc(fim)}</em>${esc(ext)}</b><small>Escaneado em ${esc(s.hora)}</small></span></button>`;
+      return `<button class="scan" data-caminho="${esc(s.caminho)}" data-nome="${esc(s.nome)}"><span class="thumb"></span><span><b>${esc(base.slice(0, -4))}<em>${esc(fim)}</em>${esc(ext)}</b><small>Escaneado em ${esc(s.hora)}</small></span></button>`;
     }).join("") : `<div class="empty">Nenhum scan esperando. Tudo organizado.</div>`;
-    document.querySelectorAll(".scan").forEach(b => b.onclick = () => { $("#cmd").value = b.dataset.fim + " > "; $("#cmd").focus(); });
+    document.querySelectorAll(".scan").forEach(b => b.onclick = () => abrirMapa(b.dataset.caminho, b.dataset.nome));
   } catch (e) {
     $("#status").textContent = "Sem conexão com o servidor"; $("#status").className = "pill demo";
   }
@@ -173,7 +205,65 @@ $("#f").addEventListener("submit", e => {
   msg(esc(t), "user"); $("#cmd").value = ""; executar(t);
 });
 
+
+// ---------- Mapa de pastas ----------
+let pk = { arquivo: null, nome: "", rel: "" };
+async function abrirMapa(caminho, nome) {
+  pk = { arquivo: caminho, nome, rel: "" };
+  $("#pkArquivo").textContent = nome; $("#busca").value = "";
+  $("#picker").hidden = false; await navegar("");
+  $("#busca").focus();
+}
+$("#pkFechar").onclick = () => { $("#picker").hidden = true; };
+function mostrarDestino() {
+  const partes = pk.rel ? pk.rel.split("/") : [];
+  $("#pkDestino").textContent = partes.length ? partes.join(" › ") : "Escolha uma pasta.";
+  $("#pkAcoes").innerHTML = `<button class="b p" type="button" id="pkMover" ${partes.length ? "" : "disabled"}>Mover para cá</button>`;
+  $("#pkMover").onclick = confirmar;
+}
+async function navegar(rel) {
+  pk.rel = rel; mostrarDestino();
+  const partes = rel ? rel.split("/") : [];
+  $("#trilha").innerHTML = `<button data-r="">Início</button>` + partes.map((p, i) => `<i>›</i><button data-r="${esc(partes.slice(0, i + 1).join("/"))}">${esc(p)}</button>`).join("");
+  $("#trilha").querySelectorAll("button").forEach(b => b.onclick = () => navegar(b.dataset.r));
+  $("#pastas").innerHTML = `<div class="empty">Carregando...</div>`;
+  try {
+    const r = await api("/api/pastas?caminho=" + encodeURIComponent(rel));
+    $("#pastas").innerHTML = r.pastas.length ? r.pastas.map(n => `<button class="pasta" data-n="${esc(n)}">${esc(n)}</button>`).join("")
+      : `<div class="empty">Não tem subpastas aqui. Pode mover para esta pasta.</div>`;
+    $("#pastas").querySelectorAll(".pasta").forEach(b => b.onclick = () => navegar((rel ? rel + "/" : "") + b.dataset.n));
+  } catch (e) { $("#pastas").innerHTML = `<div class="empty">Não consegui abrir esta pasta. Tente de novo.</div>`; }
+}
+let tBusca;
+$("#busca").addEventListener("input", () => {
+  clearTimeout(tBusca);
+  const q = $("#busca").value.trim();
+  if (!q) return navegar(pk.rel);
+  tBusca = setTimeout(async () => {
+    try {
+      const r = await api("/api/buscar?q=" + encodeURIComponent(q));
+      $("#pastas").innerHTML = r.resultados.length ? r.resultados.map(c => { const ps = c.split("/"); return `<button class="pasta" data-c="${esc(c)}"><span>${esc(ps[ps.length - 1])}<small>${esc(ps.slice(0, -1).join(" › "))}</small></span></button>`; }).join("")
+        : `<div class="empty">${esc(r.aviso || "Nenhuma pasta encontrada com esse nome.")}</div>`;
+      $("#pastas").querySelectorAll(".pasta").forEach(b => b.onclick = () => { $("#busca").value = ""; navegar(b.dataset.c); });
+    } catch (e) { $("#pastas").innerHTML = `<div class="empty">Não consegui buscar. Tente de novo.</div>`; }
+  }, 250);
+});
+function confirmar() {
+  $("#pkAcoes").innerHTML = `<span>Mover <b>${esc(pk.nome)}</b> para esta pasta?</span><button class="b p" type="button" id="pkSim">Confirmar</button><button class="b" type="button" id="pkNao">Voltar</button>`;
+  $("#pkNao").onclick = mostrarDestino;
+  $("#pkSim").onclick = async () => {
+    $("#pkSim").disabled = true; $("#pkNao").disabled = true;
+    try {
+      const m = await api("/api/mover_pasta", { arquivo: pk.arquivo, destino: pk.rel });
+      if (m.ok) {
+        $("#picker").hidden = true;
+        msg(`Movido. <b style="font-family:var(--f-mono)">${esc(pk.nome)}</b> está em <code>${esc(m.caminho.join(" › "))}</code>.`, "bot ok");
+      } else { msg(esc(m.mensagem), "bot err"); mostrarDestino(); }
+    } catch (e) { msg("Não consegui mover. Nada foi alterado. Tente de novo.", "bot err"); mostrarDestino(); }
+    fila();
+  };
+}
 fila(); setInterval(fila, 15000);
-msg(`Olá! Quando um scan chegar, me diga para onde ele vai. Exemplo: <code>5715 &gt; AN1000 &gt; AN1000BL &gt; 11</code>. Eu mostro o caminho completo e só movo depois que você confirmar. Nunca excluo nada.`);
+msg(`Olá! Quando um scan chegar, toque nele na lista e escolha a pasta no mapa: busque pelo nome da empresa ou do dono, ou vá clicando nas pastas. Eu mostro o caminho completo e só movo depois que você confirmar. Nunca excluo nada.`);
 </script>
 </body></html>
