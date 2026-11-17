@@ -13,6 +13,8 @@ mkdir -p dados
   echo
   echo "== Firewall =="; ufw status 2>&1 | head -n 12
   echo
+  echo "== Mapa de pastas =="; tail -n 3 dados/mapa.log 2>/dev/null || echo "(ainda não gerado)"
+  echo
   echo "== Últimas atualizações =="; tail -n 15 /var/log/docflow-atualizar.log 2>&1
   echo
   echo "== App (web) =="; docker compose logs --no-color --tail=25 web 2>&1 | sed -E 's/(senha|password)[^ ]*/[oculto]/Ig'

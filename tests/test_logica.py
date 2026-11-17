@@ -606,5 +606,31 @@ class TestComandos(unittest.TestCase):
         self.assertIn("9999", r.mensagem)
 
 
+
+class TestMapa(unittest.TestCase):
+    def test_mapa(self):
+        from app.mapa import codigo_de, montar, planilha
+        R = "/!Accurate"
+        class D:
+            def listar_pastas(self, p):
+                return {"/!Accurate": ["Client Data", "Office Data", "ZZBackups"]}.get(p, [])
+            def listar_pastas_recursivo(self, p):
+                return {"/!Accurate/Client Data": [
+                    "/!Accurate/Client Data/AN1000 - Adalberto Neto",
+                    "/!Accurate/Client Data/AN1000 - Adalberto Neto/AN1000BL-Bizisc Ltd",
+                    "/!Accurate/Client Data/AN1000 - Adalberto Neto/AN1000BL-Bizisc Ltd/11-Other",
+                    "/!Accurate/Client Data/AN1000 - Adalberto Neto/AN1000BL-Bizisc Ltd/11-Other/a/b/c"],
+                    "/!Accurate/ZZBackups": ["/!Accurate/ZZBackups/x"]}.get(p, [])
+        linhas = montar(D(), R, 4, ["ZZBackups"])
+        caminhos = [l["caminho"] for l in linhas]
+        self.assertIn("Client Data/AN1000 - Adalberto Neto/AN1000BL-Bizisc Ltd/11-Other", caminhos)
+        self.assertIn("Office Data", caminhos)
+        self.assertFalse(any("ZZBackups" in c for c in caminhos))
+        self.assertFalse(any(c.endswith("/a/b/c") for c in caminhos))   # passou da profundidade
+        self.assertEqual([codigo_de(n) for n in ("AN1000 - Adalberto Neto", "AN1000BL-Bizisc Ltd", "11-Other",
+                                                  "Client Data", "UK - VAT")], ["AN1000", "AN1000BL", "11", "", ""])
+        self.assertTrue(planilha(linhas, R).startswith(b"PK"))
+
+
 if __name__ == "__main__":
     unittest.main()

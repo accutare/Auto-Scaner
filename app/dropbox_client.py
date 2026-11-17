@@ -116,6 +116,22 @@ class DropboxClient:
             res = self.dbx.files_list_folder_continue(res.cursor)
         return itens
 
+    def listar_pastas_recursivo(self, pasta: str) -> list[str]:
+        """Caminhos (path_display) de todas as subpastas, em qualquer profundidade. Só leitura."""
+        caminhos: list[str] = []
+        try:
+            res = self.dbx.files_list_folder(pasta, recursive=True)
+        except ApiError as e:
+            if e.error.is_path() and e.error.get_path().is_not_found():
+                return []
+            raise
+        while True:
+            caminhos += [e.path_display for e in res.entries if isinstance(e, FolderMetadata)]
+            if not res.has_more:
+                break
+            res = self.dbx.files_list_folder_continue(res.cursor)
+        return caminhos
+
     def existe(self, caminho: str) -> bool:
         try:
             self.dbx.files_get_metadata(caminho)

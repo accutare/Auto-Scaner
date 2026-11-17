@@ -71,6 +71,15 @@ else
   fi
 fi
 
+# Mapa de pastas (só leitura): quando MAPA_RODADA muda e todo dia às 03:07. Roda em segundo plano.
+mkdir -p dados
+MAPA=$(valor MAPA_RODADA)
+if [ -n "$MAPA" ] && { [ "$MAPA" != "$(cat dados/ultimo-mapa 2>/dev/null || true)" ] || [ "$(date +%H:%M)" = "03:07" ]; }; then
+  echo "$MAPA" > dados/ultimo-mapa
+  echo "$(date -Is) gerando o mapa de pastas"
+  ( flock -n 8 || exit 0; docker compose run --rm --no-deps -T web python -m app.mapa >> dados/mapa.log 2>&1 ) 8>/var/lock/docflow-mapa.lock &
+fi
+
 # Relatório no Dropbox: depois de qualquer mudança e, fora isso, a cada 10 minutos
 if [ -n "$MUDOU" ] || [ $(( $(date +%-M) % 10 )) -eq 0 ]; then
   bash deploy/status.sh || true
