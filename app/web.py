@@ -87,7 +87,8 @@ class Confirmacao(BaseModel):
 @app.get("/", response_class=HTMLResponse, dependencies=[Depends(autenticar)])
 def pagina():
     with open(os.path.join(os.path.dirname(__file__), "web.html"), encoding="utf-8") as f:
-        return f.read()
+        # sem cache: depois de uma atualização, recarregar a página já mostra a versão nova
+        return HTMLResponse(f.read(), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/scans", dependencies=[Depends(autenticar)])
