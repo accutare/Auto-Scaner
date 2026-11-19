@@ -575,35 +575,71 @@ class TestModoCopia(unittest.TestCase):
 class TestComandos(unittest.TestCase):
     def test_interpretar(self):
         from app.comandos import interpretar
-        for texto in ("5715 > AN1000 > AN1000BL > 11", "5715 AN1000 AN1000BL 11",
-                      "manda o 5715 pra AN1000 / AN1000BL / 11"):
-            p = interpretar(texto)
-            self.assertEqual((p.final, p.codigos), ("5715", ["AN1000", "AN1000BL", "11"]), texto)
-        self.assertIsNone(interpretar("bom dia"))
+        casos = {
+            "5715 > AN1000 > AN1000BL > 11": (["5715"], ["AN1000", "AN1000BL", "11"]),
+            "5715 AN1000 AN1000BL 11": (["5715"], ["AN1000", "AN1000BL", "11"]),
+            "move 5715 to AN1000 / AN1000BL / 11": (["5715"], ["AN1000", "AN1000BL", "11"]),
+            "move 5715 5716, 5720 to AN1000 AN1000BL 11": (["5715", "5716", "5720"], ["AN1000", "AN1000BL", "11"]),
+            "5715 to Bizisc Ltd letters": (["5715"], ["Bizisc Ltd letters"]),
+            "send scan 5715 into the folder Bizisc / Letters": (["5715"], ["Bizisc", "Letters"]),
+            "to AN1000 / AN1000BL / 11": ([], ["AN1000", "AN1000BL", "11"]),
+            "AN1000 > AN1000BL > 11": ([], ["AN1000", "AN1000BL", "11"]),
+        }
+        for texto, (nums, segs) in casos.items():
+            c = interpretar(texto)
+            self.assertEqual((c.numeros, c.segmentos), (nums, segs), texto)
+        self.assertTrue(interpretar("move all to Bizisc / Other").todos)
         self.assertIsNone(interpretar("5715"))
+        self.assertIsNone(interpretar(""))
 
     def _scans(self, *nomes):
-        return [ArquivoRemoto(f"/scans/{n}", n, 1, 0, "h") for n in nomes]
+        return [ArquivoRemoto(f"/Scans/{n}", n, 1, 0, "h") for n in nomes]
 
-    def test_resolver_ok_ambiguo_e_codigo_errado(self):
-        from app.comandos import interpretar, resolver_pedido
-        dbx = DropboxComPastas({}, PASTAS_CLIENTE)
+    def test_escolher_scans(self):
+        from app.comandos import escolher_scans, interpretar
         scans = self._scans("DOC-165715.pdf", "DOC-170615.pdf", "DOC-171205.pdf")
-        r = resolver_pedido(interpretar("5715 > AN1000 > AN1000BL > 11"), scans, NOVA, dbx.listar_pastas)
-        self.assertTrue(r.ok)
-        self.assertEqual(r.destino, f"{CLI}/11-Other")
-        self.assertEqual(r.arquivo["nome"], "DOC-165715.pdf")
-        r = resolver_pedido(interpretar("15 > AN1000 > AN1000BL > 11"), scans, NOVA, dbx.listar_pastas)
-        self.assertFalse(r.ok)
-        self.assertEqual(r.tipo_opcoes, "arquivo")
-        self.assertEqual(len(r.opcoes), 2)
-        r = resolver_pedido(interpretar("1205 > AN1000 > AN1000BX > 11"), scans, NOVA, dbx.listar_pastas)
-        self.assertFalse(r.ok)
-        self.assertEqual((r.tipo_opcoes, r.nivel), ("pasta", 1))
-        self.assertIn("AN1000BL-Bizisc Ltd", r.opcoes)
-        r = resolver_pedido(interpretar("9999 > AN1000"), scans, NOVA, dbx.listar_pastas)
-        self.assertFalse(r.ok)
-        self.assertIn("9999", r.mensagem)
+        e = escolher_scans(interpretar("5715 1205 to X"), scans, [])
+        self.assertEqual([a.nome for a in e.arquivos], ["DOC-165715.pdf", "DOC-171205.pdf"])
+        e = escolher_scans(interpretar("15 to X"), scans, [])
+        self.assertFalse(e.ok)
+        self.assertEqual((e.numero, len(e.opcoes)), ("15", 2))
+        self.assertFalse(escolher_scans(interpretar("9999 to X"), scans, []).ok)
+        self.assertEqual(len(escolher_scans(interpretar("all to X"), scans, []).arquivos), 3)
+        e = escolher_scans(interpretar("to X"), scans, ["/Scans/DOC-170615.pdf", "/Scans/sumiu.pdf"])
+        self.assertEqual([a.nome for a in e.arquivos], ["DOC-170615.pdf"])
+        self.assertFalse(escolher_scans(interpretar("to X"), scans, []).ok)
+
+    def _indice(self):
+        T, M = "/TESTE - Clientes", "/!Accurate"
+        caminhos = [
+            (T, ["AN1000 - Adalberto Neto"]), (T, ["AN1000 - Adalberto Neto", "AN1000BL-Bizisc Ltd"]),
+            (T, ["AN1000 - Adalberto Neto", "AN1000BL-Bizisc Ltd", "6-Letters"]),
+            (T, ["AN1000 - Adalberto Neto", "AN1000BL-Bizisc Ltd", "11-Other"]),
+            (T, ["AN1000 - Adalberto Neto", "AN1000BL-Bizisc Ltd", "11-Other", "11-2024"]),
+            (T, ["AN1000"]), (T, ["AN1000", "AN1000BL"]), (T, ["AN1000", "AN1000BL", "11"]),
+            (T, ["AN1020 - Kingsway Cafe Ltd"]), (T, ["AN1020 - Kingsway Cafe Ltd", "11-Other"]),
+            (M, ["Client Data", "VAT", "Bizisc Ltd"]),
+        ]
+        return [(r + "/" + "/".join(p), 0 if r == T else 1, p) for r, p in caminhos]
+
+    def test_resolver_destino(self):
+        from app.comandos import resolver_destino
+        idx = self._indice()
+        CLI = "/TESTE - Clientes/AN1000 - Adalberto Neto/AN1000BL-Bizisc Ltd"
+        self.assertEqual(resolver_destino(["AN1000", "AN1000BL", "11"], idx).caminho, f"{CLI}/11-Other")
+        self.assertEqual(resolver_destino(["Bizisc", "Letters"], idx).caminho, f"{CLI}/6-Letters")
+        self.assertEqual(resolver_destino(["Bizisc Ltd letters"], idx).caminho, f"{CLI}/6-Letters")
+        self.assertEqual(resolver_destino(["Kingsway", "11"], idx).caminho,
+                         "/TESTE - Clientes/AN1020 - Kingsway Cafe Ltd/11-Other")
+        d = resolver_destino(["11"], idx)            # many "11" folders: ask, never guess
+        self.assertFalse(d.ok)
+        self.assertGreater(len(d.opcoes), 1)
+        # same company in the codes folder and in the office folder: the codes folder comes first
+        self.assertEqual(resolver_destino(["Bizisc Ltd"], idx).caminho, CLI)
+        d = resolver_destino(["Kingsway"], idx[:-1] + [("/!Accurate/Kingsway Cafe Ltd", 0, ["Kingsway Cafe Ltd"])])
+        self.assertFalse(d.ok)                       # two equally good folders in the same place: ask
+        self.assertEqual(len(d.opcoes), 2)
+        self.assertFalse(resolver_destino(["Nobody Ltd"], idx).ok)
 
 
 

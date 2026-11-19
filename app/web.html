@@ -1,29 +1,31 @@
 <!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Docflow Scanner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
-/* Layout: app de uma tela; à esquerda a fila de scans, à direita o chat de comandos (empilha no celular) */
+/* Layout: one screen; left, the waiting scans as cards with a picture of page 1 and a tick box; right, the command panel (stacks on phones) */
 :root {
   --bg: #f3f5f8; --panel: #ffffff; --ink: #15202b; --muted: #5b6878; --line: #dde3ea;
   --accent: #1d63d8; --accent-soft: #e6eefc; --ok: #1d7f55; --ok-soft: #e2f3ea;
-  --warn: #9a5b00; --warn-soft: #fbf0dc; --err: #b8352a; --err-soft: #fbe6e3;
+  --warn: #9a5b00; --warn-soft: #fbf0dc; --err: #b8352a; --err-soft: #fbe6e3; --page: #ffffff;
   --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #0f151c; --panel: #17202a; --ink: #e5ebf1; --muted: #93a1b1; --line: #2a3644;
   --accent: #6aa2ff; --accent-soft: #1a2c47; --ok: #5ccf98; --ok-soft: #143326;
-  --warn: #f0b45c; --warn-soft: #3a2b12; --err: #ff8a7d; --err-soft: #3d1d1a; color-scheme: dark; } }
+  --warn: #f0b45c; --warn-soft: #3a2b12; --err: #ff8a7d; --err-soft: #3d1d1a; --page: #f4f4f2; color-scheme: dark; } }
 :root[data-theme="dark"] {
   --bg: #0f151c; --panel: #17202a; --ink: #e5ebf1; --muted: #93a1b1; --line: #2a3644;
   --accent: #6aa2ff; --accent-soft: #1a2c47; --ok: #5ccf98; --ok-soft: #143326;
-  --warn: #f0b45c; --warn-soft: #3a2b12; --err: #ff8a7d; --err-soft: #3d1d1a; color-scheme: dark; }
+  --warn: #f0b45c; --warn-soft: #3a2b12; --err: #ff8a7d; --err-soft: #3d1d1a; --page: #f4f4f2; color-scheme: dark; }
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--f-body); }
-.app { height: 100%; display: grid; grid-template-rows: auto 1fr; max-width: 1180px; margin: 0 auto;
+[hidden] { display: none !important; }
+.app { height: 100%; display: grid; grid-template-rows: auto 1fr; max-width: 1280px; margin: 0 auto;
   padding-block: 14px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); gap: 14px; }
 header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .logo { font-weight: 600; font-size: 1.15rem; letter-spacing: -0.01em; }
@@ -31,59 +33,73 @@ header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .pill { font-size: .78rem; padding: 4px 10px; border-radius: 999px; display: inline-flex; align-items: center; gap: 6px; }
 .pill.on { background: var(--ok-soft); color: var(--ok); }
 .pill.on::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-.pill.demo { background: var(--warn-soft); color: var(--warn); }
-.root { margin-left: auto; font-size: .82rem; color: var(--muted); }
-.root code { font-family: var(--f-mono); color: var(--ink); }
-.main { display: grid; grid-template-columns: 330px 1fr; gap: 14px; min-height: 0; }
-@media (max-width: 820px) { .main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .queue { max-height: 230px; } }
-.queue, .chat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-height: 0; display: flex; flex-direction: column; }
-.q-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: baseline; }
-.q-head h2 { margin: 0; font-size: .95rem; font-weight: 600; }
-.q-head small { color: var(--muted); }
-.q-list { overflow-y: auto; padding: 8px; display: grid; gap: 6px; align-content: start; }
-.scan { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: center; padding: 8px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; background: none; color: inherit; text-align: left; font: inherit; width: 100%; }
-.scan:hover, .scan:focus-visible { background: var(--accent-soft); outline: none; border-color: var(--accent); }
-.thumb { width: 34px; height: 42px; border: 1px solid var(--line); border-radius: 3px; background: var(--bg); position: relative; }
-.thumb::after { content: "PDF"; position: absolute; bottom: 3px; left: 3px; font: 600 8px var(--f-mono); color: var(--err); }
-.scan b { font: 500 .8rem var(--f-mono); display: block; overflow-wrap: anywhere; }
-.scan b em { font-style: normal; background: var(--warn-soft); color: var(--warn); padding: 0 2px; border-radius: 3px; }
-.scan small { color: var(--muted); font-size: .76rem; }
-.empty { color: var(--muted); font-size: .85rem; padding: 18px 10px; text-align: center; }
-.msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.m { max-width: 82%; padding: 10px 12px; border-radius: 10px; font-size: .92rem; overflow-wrap: anywhere; }
-.m.user { align-self: flex-end; background: var(--accent); color: #fff; font-family: var(--f-mono); font-size: .88rem; }
+.pill.off { background: var(--warn-soft); color: var(--warn); }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px; min-height: 0; }
+@media (max-width: 860px) { .app { height: auto; } .main { grid-template-columns: minmax(0, 1fr); } .chat { min-height: 420px; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-height: 0; display: flex; flex-direction: column; }
+.p-head { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; min-height: 52px; }
+.p-head h2 { margin: 0; font-size: .95rem; font-weight: 600; }
+.p-head small { color: var(--muted); }
+.todos { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); cursor: pointer; margin-left: auto; }
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; margin: 0; }
+.selbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 14px; background: var(--accent-soft); border-bottom: 1px solid var(--line); }
+.selbar b { font-weight: 600; }
+.lista { overflow-y: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; align-content: start; min-height: 0; }
+@media (max-width: 520px) { .lista { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 8px; } .c-acts .b { padding: 6px 9px; font-size: .8rem; } }
+.card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: grid; gap: 8px; align-content: start; background: var(--panel); min-width: 0; }
+.card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-soft); }
+.c-top { display: flex; gap: 8px; align-items: flex-start; }
+.c-top label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; min-width: 0; flex: 1; }
+.c-top b { font: 500 .78rem var(--f-mono); overflow-wrap: anywhere; display: block; }
+.c-top b em { font-style: normal; background: var(--warn-soft); color: var(--warn); padding: 0 2px; border-radius: 3px; }
+.c-top small { color: var(--muted); font-size: .75rem; }
+.pagina { display: block; width: 100%; aspect-ratio: 210 / 297; max-width: 100%; background: var(--page); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; position: relative; cursor: zoom-in; }
+.pagina canvas, .pagina img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.pagina span { position: absolute; inset: 0; display: grid; place-items: center; color: #6b7480; font-size: .8rem; text-align: center; padding: 8px; }
+.c-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.empty { color: var(--muted); font-size: .9rem; padding: 30px 10px; text-align: center; grid-column: 1 / -1; }
+.msgs { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.m { max-width: 92%; padding: 9px 11px; border-radius: 10px; font-size: .9rem; overflow-wrap: anywhere; }
+.m.user { align-self: flex-end; background: var(--accent); color: #fff; font-family: var(--f-mono); font-size: .85rem; }
 .m.bot { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); }
 .m.ok { border-color: var(--ok); background: var(--ok-soft); }
 .m.err { border-color: var(--err); background: var(--err-soft); }
-.m .t { display: block; font-size: .72rem; color: var(--muted); margin-top: 4px; }
+.m .t { display: block; font-size: .7rem; color: var(--muted); margin-top: 4px; }
 .m.user .t { color: rgba(255,255,255,.75); }
-.path { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 8px 0; font: .82rem var(--f-mono); }
+.m ul { margin: 6px 0 0; padding-left: 18px; font: .8rem var(--f-mono); }
+.path { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 6px 0; font: .8rem var(--f-mono); }
 .path span { background: var(--panel); border: 1px solid var(--line); padding: 2px 6px; border-radius: 4px; }
 .path i { font-style: normal; color: var(--muted); }
-.acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
-button.b { font: 500 .85rem var(--f-body); padding: 7px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; align-items: center; }
+button.b, a.b { font: 500 .85rem var(--f-body); padding: 7px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
 button.b.p { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.b:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.b.big { padding: 9px 16px; font-size: .92rem; }
+button.b:focus-visible, a.b:focus-visible, .pagina:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button.b:disabled { opacity: .5; cursor: default; }
-.sug { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.sug button { font: .78rem var(--f-mono); padding: 3px 8px; border-radius: 5px; border: 1px dashed var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.sug { display: grid; gap: 4px; margin-top: 8px; }
+.sug button { font: .78rem var(--f-mono); padding: 5px 8px; border-radius: 5px; border: 1px dashed var(--line); background: var(--panel); color: var(--ink); cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.sug button:hover { border-color: var(--accent); }
 form { border-top: 1px solid var(--line); padding: 10px; display: grid; gap: 6px; }
 .row { display: flex; gap: 8px; }
-#cmd { flex: 1; min-width: 0; font: .95rem var(--f-mono); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+#cmd { flex: 1; min-width: 0; font: .9rem var(--f-mono); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 #cmd:focus { outline: 2px solid var(--accent); outline-offset: 0; }
-.hint { font-size: .76rem; color: var(--muted); }
+.hint { font-size: .75rem; color: var(--muted); }
 .hint code { font-family: var(--f-mono); color: var(--ink); }
 @media (prefers-reduced-motion: no-preference) { .m { animation: in .18s ease-out; } @keyframes in { from { transform: translateY(4px); opacity: .6; } } }
 
-.chat { position: relative; }
-#picker { position: absolute; inset: 0; background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; z-index: 2; }
+/* folder chooser */
+#picker { position: fixed; inset: 0; background: rgba(10, 16, 24, .45); z-index: 20; display: grid; place-items: center;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+.pk { background: var(--panel); border-radius: 12px; border: 1px solid var(--line); width: min(720px, 100%); height: min(680px, 100%); display: flex; flex-direction: column; min-height: 0; }
 .pk-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: flex-start; }
-.pk-head h3 { margin: 0; font-size: .95rem; }
-.pk-head small { display: block; font: .8rem var(--f-mono); color: var(--muted); overflow-wrap: anywhere; }
+.pk-head h3 { margin: 0; font-size: 1rem; }
+.pk-head small { display: block; font: .78rem var(--f-mono); color: var(--muted); overflow-wrap: anywhere; }
 .pk-head .b { margin-left: auto; }
-.pk-busca { padding: 10px 14px 0; }
+.pk-busca { padding: 10px 14px 0; display: grid; gap: 8px; }
 #busca { width: 100%; font: .95rem var(--f-body); padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 #busca:focus { outline: 2px solid var(--accent); }
+.recentes { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: .78rem; color: var(--muted); }
+.recentes button { font: .76rem var(--f-mono); border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 3px 8px; cursor: pointer; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
 #trilha { padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: .82rem; border-bottom: 1px solid var(--line); }
 #trilha button { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 2px 4px; border-radius: 4px; }
 #trilha button:hover { background: var(--accent-soft); }
@@ -92,7 +108,8 @@ form { border-top: 1px solid var(--line); padding: 10px; display: grid; gap: 6px
 .pasta { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 7px; padding: 8px 10px; color: var(--ink); font: .9rem var(--f-body); cursor: pointer; }
 .pasta:hover, .pasta:focus-visible { background: var(--accent-soft); border-color: var(--accent); outline: none; }
 .pasta::before { content: ""; width: 18px; height: 14px; flex: none; border-radius: 2px 4px 3px 3px; background: var(--accent); opacity: .75; }
-.pasta small { color: var(--muted); font-size: .76rem; display: block; overflow-wrap: anywhere; }
+.pasta span { min-width: 0; }
+.pasta small { color: var(--muted); font-size: .75rem; display: block; overflow-wrap: anywhere; }
 .pk-pe { border-top: 1px solid var(--line); padding: 10px 14px; display: grid; gap: 8px; }
 .pk-pe .destino { font: .82rem var(--f-mono); overflow-wrap: anywhere; }
 </style>
@@ -100,47 +117,62 @@ form { border-top: 1px solid var(--line); padding: 10px; display: grid; gap: 6px
 <div class="app">
   <header>
     <div class="logo">Docflow <span>· Scanner</span></div>
-    <span class="pill on" id="status">Conectado</span>
+    <span class="pill on" id="status">Connected</span>
   </header>
   <div class="main">
-    <section class="queue" aria-labelledby="qh">
-      <div class="q-head"><h2 id="qh">Aguardando destino</h2><small id="qcount"></small></div>
-      <div class="q-list" id="qlist"><div class="empty">Carregando os scans...</div></div>
-    </section>
-    <section class="chat" aria-label="Comandos">
-
-      <div id="picker" hidden>
-        <div class="pk-head"><div><h3>Para onde vai este scan?</h3><small id="pkArquivo"></small></div><button class="b" type="button" id="pkFechar">Fechar</button></div>
-        <div class="pk-busca"><input id="busca" autocomplete="off" placeholder="Buscar pelo nome: empresa, dono, pasta..." aria-label="Buscar pasta"></div>
-        <nav id="trilha" aria-label="Caminho"></nav>
-        <div id="pastas"></div>
-        <div class="pk-pe">
-          <div class="destino" id="pkDestino">Escolha uma pasta.</div>
-          <div class="acts" id="pkAcoes"><button class="b p" type="button" id="pkMover" disabled>Mover para cá</button></div>
-        </div>
+    <section class="panel" aria-labelledby="qh">
+      <div class="p-head"><h2 id="qh">Scans waiting for a folder</h2><small id="qcount"></small>
+        <label class="todos"><input type="checkbox" id="todos"> Select all</label></div>
+      <div class="selbar" id="selbar" hidden>
+        <span><b id="selN">0</b> selected</span>
+        <button class="b p" type="button" id="selPasta">Choose folder</button>
+        <button class="b" type="button" id="selLimpar">Clear</button>
       </div>
+      <div class="lista" id="lista"><div class="empty">Loading scans…</div></div>
+    </section>
+    <section class="panel chat" aria-label="Commands">
+      <div class="p-head"><h2>Commands</h2></div>
       <div class="msgs" id="msgs" aria-live="polite"></div>
       <form id="f">
         <div class="row">
-          <input id="cmd" autocomplete="off" placeholder="5715 > AN1000 > AN1000BL > 11" aria-label="Comando">
-          <button class="b p" type="submit" id="enviar">Enviar</button>
+          <input id="cmd" autocomplete="off" placeholder="move 5715 to AN1000 / AN1000BL / 11" aria-label="Command">
+          <button class="b p" type="submit">Send</button>
         </div>
-        <div class="hint">Toque num scan da lista para escolher a pasta no mapa. Também dá para escrever: <code>5715 &gt; AN1000 &gt; AN1000BL &gt; 11</code>.</div>
+        <div class="hint">Examples: <code>move 5715 5716 to AN1000 / AN1000BL / 11</code> · <code>5715 to Bizisc letters</code> · <code>move all to Bizisc / Other</code>. Without numbers, the ticked scans are used.</div>
       </form>
     </section>
   </div>
 </div>
+
+<div id="picker" hidden role="dialog" aria-modal="true" aria-labelledby="pkTitulo">
+  <div class="pk">
+    <div class="pk-head"><div><h3 id="pkTitulo">Choose a folder</h3><small id="pkArquivos"></small></div><button class="b" type="button" id="pkFechar">Close</button></div>
+    <div class="pk-busca">
+      <input id="busca" autocomplete="off" placeholder="Search by name: company, owner, folder…" aria-label="Search folders">
+      <div class="recentes" id="recentes"></div>
+    </div>
+    <nav id="trilha" aria-label="Path"></nav>
+    <div id="pastas"></div>
+    <div class="pk-pe">
+      <div class="destino" id="pkDestino">Pick a folder.</div>
+      <div class="acts" id="pkAcoes"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = s => document.querySelector(s);
-const agora = () => new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const agora = () => new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const plural = (n, a, b) => `${n} ${n === 1 ? a : b}`;
+const trilhaHtml = t => `<div class="path">${t.map((p, i) => `${i ? "<i>›</i>" : ""}<span>${esc(p)}</span>`).join("")}</div>`;
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 async function api(url, corpo) {
   const r = await fetch(url, corpo ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) } : {});
   if (!r.ok) throw new Error((await r.text()) || r.status);
   return r.json();
 }
-
 function msg(html, cls = "bot") {
   const d = document.createElement("div");
   d.className = "m " + cls;
@@ -150,120 +182,208 @@ function msg(html, cls = "bot") {
   return d;
 }
 
-async function fila() {
+// ---------- scans list ----------
+let scans = [];
+const sel = new Set();
+const cartoes = new Map();   // path -> card element (kept between refreshes so pictures are drawn once)
+const urlArquivo = c => "/api/arquivo?caminho=" + encodeURIComponent(c);
+
+const observador = "IntersectionObserver" in window ? new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { observador.unobserve(e.target); desenhar(e.target); }
+}), { rootMargin: "300px" }) : null;
+
+async function desenhar(caixa) {
+  const caminho = caixa.dataset.caminho, nome = caixa.dataset.nome.toLowerCase();
   try {
-    const scans = await api("/api/scans");
-    $("#status").textContent = "Conectado"; $("#status").className = "pill on";
-    $("#qcount").textContent = scans.length + (scans.length === 1 ? " arquivo" : " arquivos");
-    $("#qlist").innerHTML = scans.length ? scans.map(s => {
-      const ponto = s.nome.lastIndexOf("."), base = ponto > 0 ? s.nome.slice(0, ponto) : s.nome, ext = ponto > 0 ? s.nome.slice(ponto) : "";
-      const fim = base.slice(-4);
-      return `<button class="scan" data-caminho="${esc(s.caminho)}" data-nome="${esc(s.nome)}"><span class="thumb"></span><span><b>${esc(base.slice(0, -4))}<em>${esc(fim)}</em>${esc(ext)}</b><small>Escaneado em ${esc(s.hora)}</small></span></button>`;
-    }).join("") : `<div class="empty">Nenhum scan esperando. Tudo organizado.</div>`;
-    document.querySelectorAll(".scan").forEach(b => b.onclick = () => abrirMapa(b.dataset.caminho, b.dataset.nome));
-  } catch (e) {
-    $("#status").textContent = "Sem conexão com o servidor"; $("#status").className = "pill demo";
-  }
+    if (/\.(jpe?g|png|webp)$/.test(nome)) {
+      const img = new Image(); img.alt = "Page preview"; img.src = urlArquivo(caminho);
+      img.onerror = () => { caixa.innerHTML = "<span>No preview. Tap to open.</span>"; };
+      caixa.replaceChildren(img); return;
+    }
+    if (!nome.endsWith(".pdf") || !window.pdfjsLib) { caixa.innerHTML = "<span>No preview. Tap to open.</span>"; return; }
+    const dados = await (await fetch(urlArquivo(caminho))).arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: dados }).promise;
+    const pag = await pdf.getPage(1);
+    const v1 = pag.getViewport({ scale: 1 });
+    const escala = Math.min(3, (caixa.clientWidth * (window.devicePixelRatio || 1)) / v1.width);
+    const vp = pag.getViewport({ scale: escala });
+    const cv = document.createElement("canvas"); cv.width = vp.width; cv.height = vp.height;
+    await pag.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+    caixa.replaceChildren(cv);
+    if (pdf.numPages > 1) caixa.title = plural(pdf.numPages, "page", "pages") + " · tap to open";
+  } catch (e) { caixa.innerHTML = "<span>No preview. Tap to open.</span>"; }
 }
 
+function nomeHtml(nome) {
+  const ponto = nome.lastIndexOf("."), base = ponto > 0 ? nome.slice(0, ponto) : nome, ext = ponto > 0 ? nome.slice(ponto) : "";
+  return `${esc(base.slice(0, -4))}<em>${esc(base.slice(-4))}</em>${esc(ext)}`;
+}
+function cartao(s) {
+  const d = document.createElement("div");
+  d.className = "card";
+  d.innerHTML = `<div class="c-top"><label><input type="checkbox" aria-label="Select ${esc(s.nome)}"><span><b>${nomeHtml(s.nome)}</b><small>Scanned ${esc(s.hora)}</small></span></label></div>
+    <a class="pagina" href="${esc(urlArquivo(s.caminho))}" target="_blank" rel="noopener" data-caminho="${esc(s.caminho)}" data-nome="${esc(s.nome)}" aria-label="Open ${esc(s.nome)}"><span>Loading preview…</span></a>
+    <div class="c-acts"><button class="b p" type="button" data-a="pasta">Send to folder</button><a class="b" href="${esc(urlArquivo(s.caminho))}" target="_blank" rel="noopener">Open</a></div>`;
+  d.querySelector("input").onchange = e => { e.target.checked ? sel.add(s.caminho) : sel.delete(s.caminho); marcar(); };
+  d.querySelector('[data-a="pasta"]').onclick = () => abrirMapa([s.caminho]);
+  const caixa = d.querySelector(".pagina");
+  observador ? observador.observe(caixa) : desenhar(caixa);
+  return d;
+}
+function marcar() {
+  for (const [c, d] of cartoes) { const on = sel.has(c); d.classList.toggle("sel", on); d.querySelector("input").checked = on; }
+  $("#selN").textContent = sel.size;
+  $("#selbar").hidden = sel.size === 0;
+  $("#todos").checked = scans.length > 0 && sel.size === scans.length;
+}
+async function fila() {
+  try {
+    scans = await api("/api/scans");
+    $("#status").textContent = "Connected"; $("#status").className = "pill on";
+  } catch (e) { $("#status").textContent = "Can't reach the server"; $("#status").className = "pill off"; return; }
+  const agoraC = new Set(scans.map(s => s.caminho));
+  for (const c of [...cartoes.keys()]) if (!agoraC.has(c)) cartoes.delete(c);
+  for (const c of [...sel]) if (!agoraC.has(c)) sel.delete(c);
+  $("#qcount").textContent = plural(scans.length, "scan", "scans");
+  if (!scans.length) { $("#lista").innerHTML = `<div class="empty">No scans waiting. Everything is filed.</div>`; marcar(); return; }
+  $("#lista").replaceChildren(...scans.map(s => { if (!cartoes.has(s.caminho)) cartoes.set(s.caminho, cartao(s)); return cartoes.get(s.caminho); }));
+  marcar();
+}
+$("#todos").onchange = e => { sel.clear(); if (e.target.checked) scans.forEach(s => sel.add(s.caminho)); marcar(); };
+$("#selLimpar").onclick = () => { sel.clear(); marcar(); };
+$("#selPasta").onclick = () => abrirMapa([...sel]);
+const nomeDe = c => (scans.find(s => s.caminho === c) || { nome: c.split("/").pop() }).nome;
+
+// ---------- moving ----------
+function lembrar(caminho, trilha) {
+  try {
+    const r = JSON.parse(localStorage.getItem("docflow.recentes") || "[]").filter(x => x.caminho !== caminho);
+    r.unshift({ caminho, trilha }); localStorage.setItem("docflow.recentes", JSON.stringify(r.slice(0, 6)));
+  } catch (e) {}
+}
+function recentes() { try { return JSON.parse(localStorage.getItem("docflow.recentes") || "[]"); } catch (e) { return []; } }
+
+async function mover(arquivos, destino, origem) {
+  try {
+    const m = await api("/api/mover", { arquivos, destino, origem });
+    if (m.movidos && m.movidos.length) {
+      lembrar(destino, m.trilha);
+      msg(`Moved ${plural(m.movidos.length, "scan", "scans")} to:${trilhaHtml(m.trilha)}<ul>${m.movidos.map(x => `<li>${esc(x.nome)}</li>`).join("")}</ul>`, "bot ok");
+    }
+    if (m.falhas && m.falhas.length) msg(`Not moved:<ul>${m.falhas.map(x => `<li>${esc(x.nome)}: ${esc(x.motivo)}</li>`).join("")}</ul>`, "bot err");
+    if (!m.ok && m.mensagem) msg(esc(m.mensagem), "bot err");
+    arquivos.forEach(c => sel.delete(c));
+    return m.ok;
+  } catch (e) { msg("I couldn't move them. Nothing was changed. Please try again.", "bot err"); return false; }
+  finally { fila(); }
+}
+
+// ---------- typed commands ----------
+function confirmarCmd(arquivos, destino, trilha, texto) {
+  const d = msg(`Move ${plural(arquivos.length, "scan", "scans")} to:${trilhaHtml(trilha)}<ul>${arquivos.map(a => `<li>${esc(a.nome)}</li>`).join("")}</ul>
+    <div class="acts"><button class="b p" data-a="ok">Move</button><button class="b" data-a="no">Cancel</button></div>`);
+  d.querySelector('[data-a="ok"]').onclick = async () => {
+    d.querySelectorAll("button").forEach(b => b.disabled = true);
+    await mover(arquivos.map(a => a.caminho), destino, texto);
+  };
+  d.querySelector('[data-a="no"]').onclick = () => { d.querySelectorAll("button").forEach(b => b.disabled = true); msg("Cancelled. The scans stay in the Scans folder."); };
+}
 async function executar(texto) {
   let r;
-  try { r = await api("/api/resolver", { texto }); }
-  catch (e) { return msg("Não consegui falar com o servidor. Tente de novo em instantes.", "bot err"); }
-  if (!r.ok) {
-    const d = msg(esc(r.mensagem) + (r.opcoes && r.opcoes.length ? `<div class="sug">${r.opcoes.map(o => `<button data-o="${esc(o)}">${esc(o)}</button>`).join("")}</div>` : ""), "bot err");
+  try { r = await api("/api/comando", { texto, selecionados: [...sel] }); }
+  catch (e) { return msg("I couldn't reach the server. Please try again in a moment.", "bot err"); }
+  if (r.ok) return confirmarCmd(r.arquivos, r.destino, r.trilha, texto);
+  if (r.opcoes_arquivo && r.opcoes_arquivo.length) {
+    const d = msg(esc(r.mensagem) + `<div class="sug">${r.opcoes_arquivo.map((a, i) => `<button data-i="${i}">${esc(a.nome)} · ${esc(a.hora)}</button>`).join("")}</div>`, "bot err");
     d.querySelectorAll(".sug button").forEach(b => b.onclick = () => {
-      const partes = texto.split(/\s*>\s*|\s+/).filter(Boolean);
-      if (r.tipo_opcoes === "arquivo") {
-        const base = b.dataset.o.replace(/\.[^.]+$/, "");
-        partes[0] = base.slice(-8);
-      } else {
-        partes.splice(r.nivel + 1, partes.length, b.dataset.o.split(/[\s-]/)[0]);
-      }
-      $("#cmd").value = partes.join(" > "); $("#cmd").focus();
+      const a = r.opcoes_arquivo[b.dataset.i], digitos = (a.nome.replace(/\.[^.]+$/, "").match(/\d+$/) || [""])[0];
+      if (!digitos) return abrirMapa([a.caminho]);
+      const novo = texto.replace(new RegExp(`\\b${r.numero}\\b`), digitos);
+      msg(esc(novo), "user"); executar(novo);
     });
     return;
   }
-  const d = msg(`Vou mover <b style="font-family:var(--f-mono)">${esc(r.arquivo.nome)}</b> para:
-    <div class="path">${r.caminho.map((p, i) => `${i ? "<i>›</i>" : ""}<span>${esc(p)}</span>`).join("")}</div>
-    <div class="acts"><button class="b p" data-a="ok">Mover agora</button><button class="b" data-a="no">Cancelar</button></div>`);
-  d.querySelector('[data-a="ok"]').onclick = async () => {
-    d.querySelectorAll("button").forEach(b => b.disabled = true);
-    try {
-      const m = await api("/api/mover", { texto, arquivo: r.arquivo.caminho });
-      if (m.ok) msg(`Movido. <b style="font-family:var(--f-mono)">${esc(r.arquivo.nome)}</b> está em <code>${esc(m.caminho[m.caminho.length - 1])}</code>.`, "bot ok");
-      else msg(esc(m.mensagem), "bot err");
-    } catch (e) { msg("Não consegui mover. Nada foi alterado. Tente de novo.", "bot err"); }
-    fila();
-  };
-  d.querySelector('[data-a="no"]').onclick = () => { d.querySelectorAll("button").forEach(b => b.disabled = true); msg("Cancelado. O arquivo continua na pasta de scans."); };
+  if (r.opcoes_pasta && r.opcoes_pasta.length) {
+    const d = msg(esc(r.mensagem) + `<div class="sug">${r.opcoes_pasta.map((o, i) => `<button data-i="${i}">${esc(o.trilha.join(" › "))}</button>`).join("")}</div>`, "bot err");
+    d.querySelectorAll(".sug button").forEach(b => b.onclick = () => { const o = r.opcoes_pasta[b.dataset.i]; confirmarCmd(r.arquivos, o.caminho, o.trilha, texto); });
+    return;
+  }
+  msg(esc(r.mensagem), "bot err");
 }
-
 $("#f").addEventListener("submit", e => {
   e.preventDefault();
   const t = $("#cmd").value.trim(); if (!t) return;
   msg(esc(t), "user"); $("#cmd").value = ""; executar(t);
 });
 
-
-// ---------- Mapa de pastas ----------
-let pk = { arquivo: null, nome: "", rel: "" };
-async function abrirMapa(caminho, nome) {
-  pk = { arquivo: caminho, nome, rel: "" };
-  $("#pkArquivo").textContent = nome; $("#busca").value = "";
+// ---------- folder chooser ----------
+let pk = { arquivos: [], caminho: "", trilha: [] };
+async function abrirMapa(arquivos) {
+  if (!arquivos.length) return;
+  pk = { arquivos, caminho: "", trilha: [] };
+  $("#pkTitulo").textContent = arquivos.length === 1 ? "Choose a folder for this scan" : `Choose a folder for ${arquivos.length} scans`;
+  $("#pkArquivos").textContent = arquivos.map(nomeDe).join(" · ");
+  $("#busca").value = "";
+  const rec = recentes();
+  $("#recentes").innerHTML = rec.length ? `Recent:` + rec.map((x, i) => `<button type="button" data-i="${i}">${esc(x.trilha.slice(1).join(" › ") || x.trilha.join(" › "))}</button>`).join("") : "";
+  $("#recentes").querySelectorAll("button").forEach(b => b.onclick = () => navegar(rec[b.dataset.i].caminho));
   $("#picker").hidden = false; await navegar("");
   $("#busca").focus();
 }
-$("#pkFechar").onclick = () => { $("#picker").hidden = true; };
+function fechar() { $("#picker").hidden = true; }
+$("#pkFechar").onclick = fechar;
+$("#picker").addEventListener("click", e => { if (e.target.id === "picker") fechar(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#picker").hidden) fechar(); });
 function mostrarDestino() {
-  const partes = pk.rel ? pk.rel.split("/") : [];
-  $("#pkDestino").textContent = partes.length ? partes.join(" › ") : "Escolha uma pasta.";
-  $("#pkAcoes").innerHTML = `<button class="b p" type="button" id="pkMover" ${partes.length ? "" : "disabled"}>Mover para cá</button>`;
+  const pode = pk.trilha.length > 1;
+  $("#pkDestino").textContent = pode ? pk.trilha.join(" › ") : "Pick a folder.";
+  $("#pkAcoes").innerHTML = `<button class="b p big" type="button" id="pkMover" ${pode ? "" : "disabled"}>Move ${pk.arquivos.length === 1 ? "here" : `${pk.arquivos.length} scans here`}</button>`;
   $("#pkMover").onclick = confirmar;
 }
-async function navegar(rel) {
-  pk.rel = rel; mostrarDestino();
-  const partes = rel ? rel.split("/") : [];
-  $("#trilha").innerHTML = `<button data-r="">Início</button>` + partes.map((p, i) => `<i>›</i><button data-r="${esc(partes.slice(0, i + 1).join("/"))}">${esc(p)}</button>`).join("");
-  $("#trilha").querySelectorAll("button").forEach(b => b.onclick = () => navegar(b.dataset.r));
-  $("#pastas").innerHTML = `<div class="empty">Carregando...</div>`;
+async function navegar(caminho) {
+  pk.caminho = caminho; pk.trilha = [];
+  $("#pastas").innerHTML = `<div class="empty">Loading…</div>`;
   try {
-    const r = await api("/api/pastas?caminho=" + encodeURIComponent(rel));
-    $("#pastas").innerHTML = r.pastas.length ? r.pastas.map(n => `<button class="pasta" data-n="${esc(n)}">${esc(n)}</button>`).join("")
-      : `<div class="empty">Não tem subpastas aqui. Pode mover para esta pasta.</div>`;
-    $("#pastas").querySelectorAll(".pasta").forEach(b => b.onclick = () => navegar((rel ? rel + "/" : "") + b.dataset.n));
-  } catch (e) { $("#pastas").innerHTML = `<div class="empty">Não consegui abrir esta pasta. Tente de novo.</div>`; }
+    const r = await api("/api/pastas?caminho=" + encodeURIComponent(caminho));
+    pk.trilha = r.trilha;
+    const subidas = []; let c = r.caminho;
+    for (let i = r.trilha.length - 1; i >= 0; i--) { subidas.unshift(c); c = c.slice(0, c.lastIndexOf("/")); }
+    $("#trilha").innerHTML = `<button data-c="">All folders</button>` + r.trilha.map((p, i) => `<i>›</i><button data-c="${esc(subidas[i])}">${esc(p)}</button>`).join("");
+    $("#trilha").querySelectorAll("button").forEach(b => b.onclick = () => navegar(b.dataset.c));
+    $("#pastas").innerHTML = r.pastas.length ? r.pastas.map((p, i) => `<button class="pasta" data-i="${i}">${esc(p.nome)}</button>`).join("")
+      : `<div class="empty">No folders inside. You can move here.</div>`;
+    $("#pastas").querySelectorAll(".pasta").forEach(b => b.onclick = () => navegar(r.pastas[b.dataset.i].caminho));
+  } catch (e) { $("#pastas").innerHTML = `<div class="empty">I couldn't open this folder. Please try again.</div>`; }
+  mostrarDestino();
 }
 let tBusca;
 $("#busca").addEventListener("input", () => {
   clearTimeout(tBusca);
   const q = $("#busca").value.trim();
-  if (!q) return navegar(pk.rel);
+  if (!q) return navegar(pk.caminho);
   tBusca = setTimeout(async () => {
     try {
       const r = await api("/api/buscar?q=" + encodeURIComponent(q));
-      $("#pastas").innerHTML = r.resultados.length ? r.resultados.map(c => { const ps = c.split("/"); return `<button class="pasta" data-c="${esc(c)}"><span>${esc(ps[ps.length - 1])}<small>${esc(ps.slice(0, -1).join(" › "))}</small></span></button>`; }).join("")
-        : `<div class="empty">${esc(r.aviso || "Nenhuma pasta encontrada com esse nome.")}</div>`;
-      $("#pastas").querySelectorAll(".pasta").forEach(b => b.onclick = () => { $("#busca").value = ""; navegar(b.dataset.c); });
-    } catch (e) { $("#pastas").innerHTML = `<div class="empty">Não consegui buscar. Tente de novo.</div>`; }
+      $("#pastas").innerHTML = r.resultados.length ? r.resultados.map((x, i) => `<button class="pasta" data-i="${i}"><span>${esc(x.trilha[x.trilha.length - 1])}<small>${esc(x.trilha.slice(0, -1).join(" › "))}</small></span></button>`).join("")
+        : `<div class="empty">${esc(r.aviso || "No folder found with that name.")}</div>`;
+      $("#pastas").querySelectorAll(".pasta").forEach(b => b.onclick = () => { $("#busca").value = ""; navegar(r.resultados[b.dataset.i].caminho); });
+    } catch (e) { $("#pastas").innerHTML = `<div class="empty">I couldn't search. Please try again.</div>`; }
   }, 250);
 });
 function confirmar() {
-  $("#pkAcoes").innerHTML = `<span>Mover <b>${esc(pk.nome)}</b> para esta pasta?</span><button class="b p" type="button" id="pkSim">Confirmar</button><button class="b" type="button" id="pkNao">Voltar</button>`;
+  const n = pk.arquivos.length;
+  $("#pkAcoes").innerHTML = `<span>Move ${n === 1 ? "<b>" + esc(nomeDe(pk.arquivos[0])) + "</b>" : `<b>${n} scans</b>`} to this folder?</span><button class="b p big" type="button" id="pkSim">Yes, move</button><button class="b" type="button" id="pkNao">Back</button>`;
   $("#pkNao").onclick = mostrarDestino;
   $("#pkSim").onclick = async () => {
     $("#pkSim").disabled = true; $("#pkNao").disabled = true;
-    try {
-      const m = await api("/api/mover_pasta", { arquivo: pk.arquivo, destino: pk.rel });
-      if (m.ok) {
-        $("#picker").hidden = true;
-        msg(`Movido. <b style="font-family:var(--f-mono)">${esc(pk.nome)}</b> está em <code>${esc(m.caminho.join(" › "))}</code>.`, "bot ok");
-      } else { msg(esc(m.mensagem), "bot err"); mostrarDestino(); }
-    } catch (e) { msg("Não consegui mover. Nada foi alterado. Tente de novo.", "bot err"); mostrarDestino(); }
-    fila();
+    const ok = await mover(pk.arquivos, pk.caminho, "folder map");
+    if (ok) fechar(); else mostrarDestino();
   };
 }
+
 fila(); setInterval(fila, 15000);
-msg(`Olá! Quando um scan chegar, toque nele na lista e escolha a pasta no mapa: busque pelo nome da empresa ou do dono, ou vá clicando nas pastas. Eu mostro o caminho completo e só movo depois que você confirmar. Nunca excluo nada.`);
+msg(`Hello! Each scan waiting is on the left with a picture of its first page. Tap the picture to open it in full.<br><br>
+To file scans, tick one or more (or <b>Select all</b>) and press <b>Choose folder</b>, or type a command below, like <code>move 5715 to AN1000 / AN1000BL / 11</code>.
+I always show the full path first and only move after you confirm. I never delete anything.`);
 </script>
 </body></html>

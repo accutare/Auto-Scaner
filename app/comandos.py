@@ -1,71 +1,179 @@
-"""Comandos da pessoa do scanner: "5715 > AN1000 > AN1000BL > 11".
+"""Typed commands from the scanner operator (the app speaks English).
 
-O primeiro número é o final do nome do arquivo escaneado; os demais são os códigos das pastas (cada pasta
-existente cujo nome COMEÇA com o código). Nada é movido sem confirmação, nenhuma pasta é criada e nada é
-excluído.
+Examples that all work:
+    move 5715 to AN1000 / AN1000BL / 11
+    5715 > AN1000 > AN1000BL > 11
+    5715 5716 5720 to Bizisc Ltd / Letters
+    move all to Bizisc letters
+    to AN1000 / AN1000BL / 11            (uses the scans ticked in the list)
+
+Numbers before the destination are the last digits of scan file names. The destination is a path of
+existing folders, by code (AN1000 matches "AN1000 - Adalberto Neto") or by name words, separated by
+"/" or ">". Folders do not need to be contiguous: "Bizisc / Letters" finds ".../AN1000BL-Bizisc Ltd/6-Letters".
+Nothing here moves anything: it only works out WHAT would be moved and WHERE. No folder is ever created.
 """
+import os
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
-from .destino_codigo import _candidatas
+SEPARA = re.compile(r"\s*(?:>|/|\\)\s*")
+DIVISAO = re.compile(r"(?:^|\s+)(?:to|into|pra|para)\s+|\s*>\s*", re.I)
+PREFIXO = re.compile(r"^[A-Za-z]{0,4}\d+[A-Za-z]{0,4}(?![A-Za-z0-9])[\s\-_.]*")
+CODIGO = re.compile(r"[A-Za-z]{0,4}\d+[A-Za-z]{0,4}")
+TODOS = {"all", "everything", "todos", "tudo"}
+ENCHIMENTO = {"move", "send", "put", "file", "files", "scan", "scans", "document", "documents", "doc", "docs",
+              "the", "please", "and", "number", "numbers", "ending", "with", "in", "selected", "these", "this",
+              "them", "it", "one", "ones", "manda", "mover", "move-to", "o", "os", "a", "as", "e"}
+INICIO_DESTINO = {"the", "folder", "folders", "pasta", "a", "o"}
 
-PALAVRAS = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")
+
+def normalizar(t: str) -> str:
+    t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", t).split())
 
 
 @dataclass
-class Pedido:
-    final: str
-    codigos: list[str]
+class Comando:
+    numeros: list[str]           # last digits of scan names
+    todos: bool                  # "all"
+    segmentos: list[str]         # destination, one entry per folder level given
 
 
-def interpretar(texto: str) -> Pedido | None:
-    """Aceita "5715 > AN1000 > AN1000BL > 11", "5715 AN1000 AN1000BL 11" ou
-    "manda o 5715 pra AN1000 AN1000BL 11": o primeiro número é o final do arquivo; depois, cada palavra
-    com algum dígito é um código."""
-    tokens = PALAVRAS.findall(texto or "")
-    i = next((k for k, t in enumerate(tokens) if t.isdigit()), None)
-    if i is None:
+def _limpa(tok: str) -> str:
+    return tok.strip(",.;:!?").lower()
+
+
+def interpretar(texto: str) -> Comando | None:
+    t = (texto or "").strip()
+    for a, b in (("->", ">"), ("=>", ">"), ("›", ">"), ("»", ">")):
+        t = t.replace(a, b)
+    m = DIVISAO.search(t)
+    if m:
+        esq, dir_ = t[:m.start()], t[m.end():]
+        esq_toks = [_limpa(x) for x in esq.split()]
+        sobra = [x for x in esq_toks if x and not x.isdigit() and x not in ENCHIMENTO | TODOS]
+        if sobra and m.group(0).strip() == ">":
+            # "AN1000 > AN1000BL > 11": everything is the destination (scans come from the ticked list)
+            esq, dir_ = "", t
+    else:
+        toks = t.split()
+        i = 0
+        while i < len(toks) and (_limpa(toks[i]).isdigit() or _limpa(toks[i]) in ENCHIMENTO | TODOS):
+            i += 1
+        esq, dir_ = " ".join(toks[:i]), " ".join(toks[i:])
+    esq_toks = [_limpa(x) for x in esq.split()]
+    numeros = [x for x in esq_toks if x.isdigit()]
+    todos = any(x in TODOS for x in esq_toks)
+    segmentos = [s.strip(" ,.;:") for s in SEPARA.split(dir_.strip()) if s.strip(" ,.;:")]
+    if segmentos:
+        palavras = segmentos[0].split()
+        while palavras and palavras[0].lower() in INICIO_DESTINO:
+            palavras.pop(0)
+        segmentos[0] = " ".join(palavras)
+        segmentos = [s for s in segmentos if s]
+    # "AN1000 AN1000BL 11" with spaces only: every word is a code -> one level each
+    if len(segmentos) == 1 and len(segmentos[0].split()) > 1 and all(CODIGO.fullmatch(w) for w in segmentos[0].split()):
+        segmentos = segmentos[0].split()
+    if not segmentos:
         return None
-    codigos = [t for t in tokens[i + 1:] if any(ch.isdigit() for ch in t)]
-    return Pedido(tokens[i], codigos) if codigos else None
+    return Comando(numeros, todos, segmentos)
+
+
+# ---------------------------------------------------------------- which scans
+@dataclass
+class Escolha:
+    ok: bool
+    mensagem: str = ""
+    arquivos: list = field(default_factory=list)      # ArquivoRemoto
+    numero: str = ""                                  # number that matched several scans
+    opcoes: list = field(default_factory=list)        # ArquivoRemoto candidates for that number
+
+
+def escolher_scans(cmd: Comando, scans: list, selecionados: list[str]) -> Escolha:
+    if cmd.todos:
+        return Escolha(True, arquivos=list(scans)) if scans else Escolha(False, "There are no scans waiting.")
+    if cmd.numeros:
+        achados = []
+        for n in cmd.numeros:
+            casa = [s for s in scans if os.path.splitext(s.nome)[0].endswith(n)]
+            if not casa:
+                return Escolha(False, f"No scan in the Scans folder ends with {n}. Check the number in the file name.")
+            if len(casa) > 1:
+                return Escolha(False, f"{len(casa)} scans end with {n}. Which one?", numero=n, opcoes=casa)
+            if casa[0] not in achados:
+                achados.append(casa[0])
+        return Escolha(True, arquivos=achados)
+    marcados = [s for s in scans if s.caminho in set(selecionados or [])]
+    if marcados:
+        return Escolha(True, arquivos=marcados)
+    return Escolha(False, "Which scan? Type the last digits of the file name (for example 5715), "
+                          "or tick the scans in the list first.")
+
+
+# ---------------------------------------------------------------- which folder
+def casa_segmento(seg: str, nome: str) -> int | None:
+    """How well one typed level matches one folder name: 0 best, 1 good, None no match."""
+    s = seg.strip()
+    if CODIGO.fullmatch(s) and re.match(rf"{re.escape(s)}(?![A-Za-z0-9])", nome.strip(), re.I):
+        return 0 if len(nome.strip()) > len(s) else 1   # "AN1000 - Adalberto Neto" beats a bare "AN1000"
+    ns, nn = normalizar(s).split(), normalizar(nome)
+    if not ns:
+        return None
+    if nn == " ".join(ns) or normalizar(PREFIXO.sub("", nome.strip())) == " ".join(ns):
+        return 0   # "Bizisc Ltd" == "AN1000BL-Bizisc Ltd" once the code is set aside
+    palavras = nn.split()
+    if all(any(p.startswith(w) for p in palavras) for w in ns):
+        return 1
+    return None
 
 
 @dataclass
-class Resultado:
+class Destino:
     ok: bool
-    mensagem: str
-    arquivo: dict | None = None            # {"caminho", "nome"}
-    caminho: list[str] = field(default_factory=list)   # pastas encontradas (nomes)
-    destino: str | None = None             # caminho completo da pasta de destino
-    opcoes: list[str] = field(default_factory=list)    # sugestões (arquivos ou pastas)
-    tipo_opcoes: str | None = None         # "arquivo" | "pasta"
-    nivel: int = 0                         # em qual código parou (para sugestões de pasta)
+    mensagem: str = ""
+    caminho: str = ""                                # absolute Dropbox path of the folder
+    opcoes: list[str] = field(default_factory=list)  # absolute paths to choose from
 
 
-def resolver_pedido(pedido: Pedido, scans: list, raiz: str, listar_pastas) -> Resultado:
-    import os
-    achados = [s for s in scans if os.path.splitext(s.nome)[0].endswith(pedido.final)]
-    if not achados:
-        return Resultado(False, f"Não encontrei nenhum scan terminando em {pedido.final} na pasta de scans. "
-                                "Confira o número no nome do arquivo.")
-    if len(achados) > 1:
-        return Resultado(False, f"Tem {len(achados)} scans terminando em {pedido.final}. Qual é?",
-                         opcoes=[s.nome for s in achados], tipo_opcoes="arquivo")
-    arq = achados[0]
-    atual, caminho = raiz.rstrip("/"), []
-    for n, codigo in enumerate(pedido.codigos):
-        nomes = listar_pastas(atual)
-        com_descricao, exatas = _candidatas(codigo, nomes)
-        escolhidas = com_descricao or exatas
-        if len(escolhidas) != 1:
-            onde = " / ".join(caminho) or "pasta principal"
-            if escolhidas:
-                msg = f"Mais de uma pasta começa com {codigo} em {onde}. Nada foi movido."
-            else:
-                msg = f"Não encontrei pasta que comece com {codigo} em {onde}. Nada foi movido."
-            return Resultado(False, msg, arquivo={"caminho": arq.caminho, "nome": arq.nome}, caminho=caminho,
-                             opcoes=(escolhidas or nomes)[:40], tipo_opcoes="pasta", nivel=n)
-        caminho.append(escolhidas[0])
-        atual = f"{atual}/{escolhidas[0]}"
-    return Resultado(True, "ok", arquivo={"caminho": arq.caminho, "nome": arq.nome}, caminho=caminho,
-                     destino=atual)
+def resolver_destino(segmentos: list[str], indice: list[tuple[str, int, list[str]]]) -> Destino:
+    """indice: (absolute path, root priority, path parts below its root). Picks the single best folder."""
+    cands = []
+    for caminho, prio, partes in indice:
+        if not partes:
+            continue
+        q = casa_segmento(segmentos[-1], partes[-1])
+        if q is None:
+            continue
+        total, j, anterior, junto, ok = q, len(partes) - 2, len(partes) - 1, True, True
+        for seg in reversed(segmentos[:-1]):
+            while j >= 0 and casa_segmento(seg, partes[j]) is None:
+                j -= 1
+            if j < 0:
+                ok = False
+                break
+            junto = junto and j == anterior - 1
+            total += casa_segmento(seg, partes[j])
+            anterior, j = j, j - 1
+        if ok:
+            cands.append(((0 if junto else 1, total, prio), len(partes), caminho))
+    if not cands and len(segmentos) == 1:
+        # "Bizisc letters": every word somewhere in the path, and the last folder matches one of them
+        palavras = normalizar(segmentos[0]).split()
+        for caminho, prio, partes in indice:
+            if not partes:
+                continue
+            todas = normalizar(" ".join(partes)).split()
+            ultima = normalizar(partes[-1]).split()
+            if all(any(p.startswith(w) for p in todas) for w in palavras) and \
+                    any(any(p.startswith(w) for p in ultima) for w in palavras):
+                cands.append(((1, 2, prio), len(partes), caminho))
+    if not cands:
+        return Destino(False, f"I couldn't find a folder for “{' / '.join(segmentos)}”. "
+                              "Check the name or code, or use Choose folder.")
+    cands.sort()
+    if len(cands) == 1 or cands[0][0] < cands[1][0]:
+        return Destino(True, caminho=cands[0][2])
+    melhores = [c for c in cands if c[0] == cands[0][0]]
+    return Destino(False, f"{len(melhores)} folders match “{' / '.join(segmentos)}”. Which one?",
+                   opcoes=[c[2] for c in melhores[:12]])

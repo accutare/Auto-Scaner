@@ -1,25 +1,27 @@
-"""App da pessoa do scanner: ela escreve "5715 > AN1000 > AN1000BL > 11", confere o caminho e confirma.
+"""Scanner app (English): the operator sees each waiting scan with a picture of its first page, ticks one
+or many, and sends them to a folder by choosing it on the folder map or by typing a path command
+("move 5715 5716 to AN1000 / AN1000BL / 11").
 
-Roda no servidor (atrás do Caddy, com HTTPS) e fala direto com o Dropbox. Login: usuário "scanner" e a senha
-gerada no primeiro uso (guardada em /data/app_senha.txt e enviada para o Dropbox em "Docflow/Senha do app.txt").
-Regras: só move depois de "Mover agora", nunca cria pasta, nunca exclui nada.
+Runs on the server (behind Caddy, with HTTPS) and talks straight to Dropbox. Login: user "scanner" and the
+password generated on first use (kept in /data/app_senha.txt and sent to Dropbox "Docflow/Senha do app.txt").
+Rules: it only moves after the operator confirms, never creates folders, never deletes anything, and only
+moves into folders under the allowed roots.
 """
-import hashlib
 import json
 import logging
 import os
-import re
 import secrets
+import threading
 import time
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 from . import config as cfgmod
-from .comandos import interpretar, resolver_pedido
+from .comandos import escolher_scans, interpretar, normalizar, resolver_destino
 from .dropbox_client import DropboxClient
 from .registro import Registro
 
@@ -30,13 +32,20 @@ cfg = cfgmod.carregar()
 os.makedirs(cfg.dados_dir, exist_ok=True)
 dbx = DropboxClient(cfg.dropbox_app_key, cfg.dropbox_app_secret, cfg.dropbox_refresh_token, cfg.dropbox_team_space)
 registro = Registro(os.path.join(cfg.dados_dir, "controle.db"))
-RAIZ = os.environ.get("PASTA_RAIZ_CODIGOS", cfg.pasta_clientes).rstrip("/")
 USUARIO = "scanner"
 EXTENSOES = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff")
+TIPOS = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+         ".webp": "image/webp", ".tif": "image/tiff", ".tiff": "image/tiff"}
+
+# Folders the app may move into (searched in this order when a command matches in both)
+RAIZ_CODIGOS = os.environ.get("PASTA_RAIZ_CODIGOS", cfg.pasta_clientes).rstrip("/")
+RAIZ_MAPA = os.environ.get("MAPA_RAIZ", "/!Accurate Complete Accounting Ltd - data files").rstrip("/")
+IGNORAR_MAPA = {i.strip().lower() for i in os.environ.get("MAPA_IGNORAR", "").split(";") if i.strip()}
+RAIZES = [r for r in dict.fromkeys([RAIZ_CODIGOS, RAIZ_MAPA]) if r]
 
 
 def _senha() -> str:
-    """Senha do app: APP_SENHA no .env, ou gerada uma vez e guardada no servidor e no Dropbox."""
+    """App password: APP_SENHA in .env, or generated once and kept on the server and in Dropbox."""
     if os.environ.get("APP_SENHA"):
         return os.environ["APP_SENHA"]
     arq = os.path.join(cfg.dados_dir, "app_senha.txt")
@@ -51,7 +60,7 @@ def _senha() -> str:
                  "Guarde num lugar seguro. Pode mover ou apagar este arquivo depois.\n")
         dbx.enviar("/Docflow/Senha do app.txt", texto.encode("utf-8"))
     except Exception:  # noqa: BLE001
-        log.exception("Não consegui enviar a senha para o Dropbox (ela está em %s)", arq)
+        log.exception("Could not send the password to Dropbox (it is in %s)", arq)
     return senha
 
 
@@ -63,8 +72,8 @@ def autenticar(cred: HTTPBasicCredentials = Depends(seguranca)) -> None:
     ok_u = secrets.compare_digest(cred.username.encode(), USUARIO.encode())
     ok_s = secrets.compare_digest(cred.password.encode(), SENHA.encode())
     if not (ok_u and ok_s):
-        time.sleep(1)  # freia tentativas de adivinhar a senha
-        raise HTTPException(401, "Usuário ou senha incorretos", headers={"WWW-Authenticate": "Basic"})
+        time.sleep(1)  # slows down password guessing
+        raise HTTPException(401, "Wrong user or password", headers={"WWW-Authenticate": "Basic"})
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -75,144 +84,194 @@ def _scans():
     return sorted(itens, key=lambda a: a.modificado, reverse=True)
 
 
-class Texto(BaseModel):
-    texto: str
+# ---------------------------------------------------------------- allowed folders
+def _raiz_de(caminho: str) -> str | None:
+    c = (caminho or "").rstrip("/")
+    partes = [p for p in c.split("/") if p]
+    if any(p in (".", "..") for p in partes):
+        return None
+    for r in RAIZES:
+        if c.lower() == r.lower() or c.lower().startswith(r.lower() + "/"):
+            resto = c[len(r):].strip("/").split("/")
+            if r == RAIZ_MAPA and resto and resto[0] and resto[0].lower() in IGNORAR_MAPA:
+                return None
+            return r
+    return None
 
 
-class Confirmacao(BaseModel):
-    texto: str
-    arquivo: str
+def _rotulo(caminho: str) -> list[str]:
+    """Path as the operator reads it: the root's own name, then the folders below it."""
+    r = _raiz_de(caminho) or ""
+    resto = [p for p in caminho[len(r):].split("/") if p]
+    return [r.split("/")[-1]] + resto
 
 
+_indice = {"t": 0.0, "mapa_mtime": None, "itens": []}
+_trava = threading.Lock()
+
+
+def indice() -> list[tuple[str, int, list[str]]]:
+    """Every folder the app may move into: the daily folder map + a live listing of the codes root."""
+    arq = os.path.join(cfg.dados_dir, "mapa.json")
+    mtime = os.path.getmtime(arq) if os.path.exists(arq) else None
+    with _trava:
+        if _indice["itens"] and time.time() - _indice["t"] < 600 and _indice["mapa_mtime"] == mtime:
+            return _indice["itens"]
+        caminhos: list[str] = []
+        for r in RAIZES:
+            if r == RAIZ_MAPA and mtime is not None:
+                with open(arq, encoding="utf-8") as f:
+                    mapa = json.load(f)
+                base = (mapa.get("raiz") or RAIZ_MAPA).rstrip("/")
+                caminhos += [f"{base}/{l['caminho']}" for l in mapa.get("pastas", [])]
+            elif r != RAIZ_MAPA:
+                try:
+                    caminhos += dbx.listar_pastas_recursivo(r)
+                except Exception:  # noqa: BLE001
+                    log.exception("Could not list %s", r)
+        itens, vistos = [], set()
+        for c in caminhos:
+            raiz = _raiz_de(c)
+            if not raiz or c.lower() in vistos:
+                continue
+            vistos.add(c.lower())
+            itens.append((c, RAIZES.index(raiz), [p for p in c[len(raiz):].split("/") if p]))
+        _indice.update(t=time.time(), mapa_mtime=mtime, itens=itens)
+        return itens
+
+
+# ---------------------------------------------------------------- pages and data
 @app.get("/", response_class=HTMLResponse, dependencies=[Depends(autenticar)])
 def pagina():
     with open(os.path.join(os.path.dirname(__file__), "web.html"), encoding="utf-8") as f:
-        # sem cache: depois de uma atualização, recarregar a página já mostra a versão nova
+        # never cached: after an update, a reload shows the new version
         return HTMLResponse(f.read(), headers={"Cache-Control": "no-store"})
+
+
+def _scan_json(a):
+    return {"nome": a.nome, "caminho": a.caminho, "tamanho": a.tamanho,
+            "hora": datetime.fromtimestamp(a.modificado, timezone.utc).astimezone().strftime("%d/%m %H:%M")}
 
 
 @app.get("/api/scans", dependencies=[Depends(autenticar)])
 def scans():
-    return [{"nome": a.nome, "caminho": a.caminho, "hora": datetime.fromtimestamp(a.modificado, timezone.utc).astimezone()
-             .strftime("%d/%m %H:%M")} for a in _scans()]
+    return [_scan_json(a) for a in _scans()]
 
 
-@app.post("/api/resolver", dependencies=[Depends(autenticar)])
-def resolver(p: Texto):
-    pedido = interpretar(p.texto)
-    if not pedido:
-        return {"ok": False, "mensagem": "Escreva o final do arquivo e os códigos, por exemplo: "
-                                          "5715 > AN1000 > AN1000BL > 11"}
-    return resolver_pedido(pedido, _scans(), RAIZ, dbx.listar_pastas).__dict__
-
-
-@app.post("/api/mover", dependencies=[Depends(autenticar)])
-def mover(c: Confirmacao):
-    # Refaz a conferência no servidor: só move exatamente o que foi mostrado na tela
-    pedido = interpretar(c.texto)
-    if not pedido:
-        raise HTTPException(400, "Comando inválido")
-    r = resolver_pedido(pedido, _scans(), RAIZ, dbx.listar_pastas)
-    if not r.ok or r.arquivo["caminho"] != c.arquivo:
-        return {"ok": False, "mensagem": "O arquivo ou as pastas mudaram desde a conferência. Envie o comando de novo."}
-    if not r.destino.startswith(RAIZ + "/"):
-        raise HTTPException(400, "Destino fora da pasta principal")
-    final = dbx.mover(r.arquivo["caminho"], f"{r.destino}/{r.arquivo['nome']}")
-    registro.inserir(
-        status="OK", cliente=r.caminho[0] if r.caminho else None, servico=" / ".join(r.caminho[1:]) or None,
-        motivo=f"comando do app: {c.texto.strip()}", arquivo_original=r.arquivo["nome"],
-        caminho_original=r.arquivo["caminho"], caminho_final=final,
-        hash_arquivo=hashlib.sha256(final.encode()).hexdigest(),
-    )
-    try:
-        dbx.enviar(f"{cfg.pasta_controle}/Controle.xlsx", registro.exportar_excel())
-    except Exception:  # noqa: BLE001
-        log.exception("Não consegui atualizar o Controle.xlsx")
-    log.info("Movido pelo app: %s -> %s", r.arquivo["caminho"], final)
-    return {"ok": True, "mensagem": "Movido.", "final": final, "caminho": r.caminho}
-
-
-# ---------- Escolher a pasta pelo mapa (navegando ou buscando pelo nome) ----------
-RAIZ_MAPA = os.environ.get("MAPA_RAIZ", "/!Accurate Complete Accounting Ltd - data files").rstrip("/")
-IGNORAR_MAPA = {i.strip().lower() for i in os.environ.get("MAPA_IGNORAR", "ZZBackups").split(";") if i.strip()}
-
-
-def _rel_valido(rel: str) -> str:
-    rel = (rel or "").strip().strip("/")
-    partes = [p for p in rel.split("/") if p]
-    if any(p in (".", "..") for p in partes):
-        raise HTTPException(400, "Caminho inválido")
-    if partes and partes[0].lower() in IGNORAR_MAPA:
-        raise HTTPException(400, "Pasta fora do mapa")
-    return "/".join(partes)
+@app.get("/api/arquivo", dependencies=[Depends(autenticar)])
+def arquivo(caminho: str):
+    """The scan itself, to show its first page and open it in full. Only files waiting in Scans."""
+    arq = {a.caminho: a for a in _scans()}.get(caminho)
+    if not arq:
+        raise HTTPException(404, "This scan is no longer in the Scans folder")
+    ext = os.path.splitext(arq.nome)[1].lower()
+    return Response(dbx.baixar(arq.caminho), media_type=TIPOS.get(ext, "application/octet-stream"),
+                    headers={"Cache-Control": "private, max-age=600",
+                             "Content-Disposition": f'inline; filename="{arq.nome.encode("ascii", "ignore").decode()}"'})
 
 
 @app.get("/api/pastas", dependencies=[Depends(autenticar)])
 def pastas(caminho: str = ""):
-    rel = _rel_valido(caminho)
-    nomes = dbx.listar_pastas(f"{RAIZ_MAPA}/{rel}" if rel else RAIZ_MAPA)
-    if not rel:
+    if not caminho.strip("/"):
+        return {"caminho": "", "trilha": [], "pastas": [{"nome": r.split("/")[-1], "caminho": r} for r in RAIZES]}
+    raiz = _raiz_de(caminho)
+    if not raiz:
+        raise HTTPException(400, "This folder is outside the allowed folders")
+    c = caminho.rstrip("/")
+    nomes = dbx.listar_pastas(c)
+    if c.lower() == RAIZ_MAPA.lower():
         nomes = [n for n in nomes if n.lower() not in IGNORAR_MAPA]
-    return {"caminho": rel, "pastas": nomes}
-
-
-def _normalizar(t: str) -> str:
-    import unicodedata
-    t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
-    return " ".join(re.sub(r"[^a-z0-9]+", " ", t).split())
+    return {"caminho": c, "trilha": _rotulo(c), "pastas": [{"nome": n, "caminho": f"{c}/{n}"} for n in nomes]}
 
 
 @app.get("/api/buscar", dependencies=[Depends(autenticar)])
 def buscar(q: str = ""):
-    palavras = _normalizar(q).split()
-    arq = os.path.join(cfg.dados_dir, "mapa.json")
+    palavras = normalizar(q).split()
     if not palavras:
         return {"resultados": []}
-    if not os.path.exists(arq):
-        return {"resultados": [], "aviso": "O mapa de pastas ainda está sendo gerado. Use a navegação por enquanto."}
-    with open(arq, encoding="utf-8") as f:
-        mapa = json.load(f)
     res = []
-    for l in mapa.get("pastas", []):
-        alvo = _normalizar(l["caminho"])
-        if all(p in alvo for p in palavras):
-            # pastas cujo próprio nome bate vêm primeiro, depois as mais curtas
-            nome = _normalizar(l["pasta"])
-            res.append((0 if any(p in nome for p in palavras) else 1, l["nivel"], l["caminho"]))
+    for caminho, prio, partes in indice():
+        alvo = normalizar(" ".join(partes)).split()
+        if all(any(p.startswith(w) for p in alvo) for w in palavras):
+            nome = normalizar(partes[-1]).split()
+            proprio = any(any(p.startswith(w) for p in nome) for w in palavras)
+            res.append((0 if proprio else 1, len(partes), prio, caminho))
     res.sort()
-    return {"resultados": [r[2] for r in res[:40]]}
+    aviso = "" if os.path.exists(os.path.join(cfg.dados_dir, "mapa.json")) else \
+        "The folder map is still being built, so some folders may be missing. You can browse instead."
+    return {"resultados": [{"caminho": r[3], "trilha": _rotulo(r[3])} for r in res[:40]], "aviso": aviso}
 
 
-class Destino(BaseModel):
-    arquivo: str
+class Comando(BaseModel):
+    texto: str
+    selecionados: list[str] = []
+
+
+@app.post("/api/comando", dependencies=[Depends(autenticar)])
+def comando(c: Comando):
+    """Works out which scans and which folder a typed command means. Moves nothing."""
+    cmd = interpretar(c.texto)
+    if not cmd:
+        return {"ok": False, "mensagem": "Tell me the scans and the folder, for example: "
+                                         "move 5715 to AN1000 / AN1000BL / 11"}
+    esc = escolher_scans(cmd, _scans(), c.selecionados)
+    if not esc.ok:
+        return {"ok": False, "mensagem": esc.mensagem, "numero": esc.numero,
+                "opcoes_arquivo": [_scan_json(a) for a in esc.opcoes]}
+    d = resolver_destino(cmd.segmentos, indice())
+    base = {"arquivos": [_scan_json(a) for a in esc.arquivos]}
+    if not d.ok:
+        return {**base, "ok": False, "mensagem": d.mensagem,
+                "opcoes_pasta": [{"caminho": o, "trilha": _rotulo(o)} for o in d.opcoes]}
+    return {**base, "ok": True, "destino": d.caminho, "trilha": _rotulo(d.caminho)}
+
+
+class Envio(BaseModel):
+    arquivos: list[str]
     destino: str
+    origem: str = ""          # how the folder was chosen (command text or "folder map"), for the log
 
 
-@app.post("/api/mover_pasta", dependencies=[Depends(autenticar)])
-def mover_pasta(d: Destino):
-    rel = _rel_valido(d.destino)
-    if not rel:
-        raise HTTPException(400, "Escolha uma pasta")
-    scans_atuais = {a.caminho: a for a in _scans()}
-    arq = scans_atuais.get(d.arquivo)
-    if not arq:
-        return {"ok": False, "mensagem": "Esse scan não está mais na pasta de scans. Atualize a lista."}
-    pasta = f"{RAIZ_MAPA}/{rel}"
-    if not dbx.existe(pasta):
-        return {"ok": False, "mensagem": "Essa pasta não existe mais. Escolha de novo."}
-    final = dbx.mover(arq.caminho, f"{pasta}/{arq.nome}")
-    partes = rel.split("/")
-    registro.inserir(
-        status="OK", cliente=partes[1] if len(partes) > 1 else partes[0], servico=" / ".join(partes[2:]) or None,
-        motivo="escolhido no mapa do app", arquivo_original=arq.nome, caminho_original=arq.caminho,
-        caminho_final=final, hash_arquivo=arq.content_hash or hashlib.sha256(final.encode()).hexdigest(),
-    )
-    try:
-        dbx.enviar(f"{cfg.pasta_controle}/Controle.xlsx", registro.exportar_excel())
-    except Exception:  # noqa: BLE001
-        log.exception("Não consegui atualizar o Controle.xlsx")
-    log.info("Movido pelo mapa: %s -> %s", arq.caminho, final)
-    return {"ok": True, "final": final, "caminho": partes}
+@app.post("/api/mover", dependencies=[Depends(autenticar)])
+def mover(e: Envio):
+    """Moves one or many scans into one existing folder. No limit on how many."""
+    if not e.arquivos:
+        return {"ok": False, "mensagem": "Tick at least one scan."}
+    destino = e.destino.rstrip("/")
+    raiz = _raiz_de(destino)
+    if not raiz or destino.lower() == raiz.lower():
+        raise HTTPException(400, "Choose a folder inside the client folders")
+    if not dbx.existe(destino):
+        return {"ok": False, "mensagem": "That folder no longer exists. Choose it again."}
+    atuais = {a.caminho: a for a in _scans()}
+    trilha = _rotulo(destino)
+    movidos, falhas = [], []
+    for caminho in dict.fromkeys(e.arquivos):
+        arq = atuais.get(caminho)
+        nome = caminho.rsplit("/", 1)[-1]
+        if not arq:
+            falhas.append({"nome": nome, "motivo": "no longer in the Scans folder"})
+            continue
+        try:
+            final = dbx.mover(arq.caminho, f"{destino}/{arq.nome}")
+        except Exception:  # noqa: BLE001
+            log.exception("Move failed: %s", arq.caminho)
+            falhas.append({"nome": nome, "motivo": "Dropbox did not accept the move; it is still in Scans"})
+            continue
+        registro.inserir(
+            status="OK", cliente=trilha[1] if len(trilha) > 1 else trilha[0],
+            servico=" / ".join(trilha[2:]) or None, motivo=f"app: {(e.origem or 'folder map')[:200]}",
+            arquivo_original=arq.nome, caminho_original=arq.caminho, caminho_final=final,
+            hash_arquivo=arq.content_hash or None,
+        )
+        movidos.append({"nome": arq.nome, "final": final})
+        log.info("Moved by the app: %s -> %s", arq.caminho, final)
+    if movidos:
+        try:
+            dbx.enviar(f"{cfg.pasta_controle}/Controle.xlsx", registro.exportar_excel())
+        except Exception:  # noqa: BLE001
+            log.exception("Could not update Controle.xlsx")
+    return {"ok": bool(movidos), "movidos": movidos, "falhas": falhas, "trilha": trilha}
 
 
 @app.get("/saude")
