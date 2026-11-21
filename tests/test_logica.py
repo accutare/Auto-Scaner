@@ -643,6 +643,40 @@ class TestComandos(unittest.TestCase):
 
 
 
+class TestCaminhoColado(unittest.TestCase):
+    """Paths pasted from Windows File Explorer or typed as full Dropbox paths."""
+    M = "/!Accurate Complete Accounting Ltd - data files"
+    ARVORE = {M: ["Client Data", "Office Data"], M + "/Client Data": ["AV1000- Aveiro, Vanusa de", "AN1000 - Adalberto Neto"],
+              M + "/Client Data/AV1000- Aveiro, Vanusa de": ["Test", "11-Other"], M + "/Client Data/AV1000- Aveiro, Vanusa de/Test": []}
+
+    def listar(self, p):
+        return self.ARVORE.get(p, [])
+
+    def test_caminho_do_windows(self):
+        from app.comandos import interpretar, resolver
+        raizes = ["/TESTE - Clientes", self.M]
+        win = r"C:\Users\vavei\Dropbox\!Accurate Complete Accounting Ltd - data files\Client Data\AV1000- Aveiro, Vanusa de\Test"
+        for texto in (win, "2258 " + win, "move 2258 to " + win, win + "\\",
+                      "move 2258 to /!Accurate Complete Accounting Ltd - data files/Client Data/AV1000- Aveiro, Vanusa de/test"):
+            c = interpretar(texto)
+            self.assertTrue(c.caminho_completo, texto)
+            d = resolver(c, [], raizes, self.listar)
+            self.assertEqual(d.caminho, self.M + "/Client Data/AV1000- Aveiro, Vanusa de/Test", texto)
+        self.assertEqual(interpretar("2258 " + win).numeros, ["2258"])
+        d = resolver(interpretar(win.replace("Test", "Tset")), [], raizes, self.listar)
+        self.assertFalse(d.ok)
+        self.assertIn("Tset", d.mensagem)
+        self.assertIn(self.M + "/Client Data/AV1000- Aveiro, Vanusa de/Test", d.opcoes)
+        d = resolver(interpretar(r"C:\Users\vavei\Dropbox\Personal\Fotos"), [], raizes, self.listar)
+        self.assertFalse(d.ok)
+        self.assertIn("outside", d.mensagem)
+
+    def test_pasta_nova_fora_do_mapa(self):
+        from app.comandos import interpretar, resolver
+        d = resolver(interpretar("move 2258 to Client Data / AV1000 / Test"), [], ["/TESTE - Clientes", self.M], self.listar)
+        self.assertEqual(d.caminho, self.M + "/Client Data/AV1000- Aveiro, Vanusa de/Test")
+
+
 class TestMapa(unittest.TestCase):
     def test_mapa(self):
         from app.mapa import codigo_de, montar, planilha

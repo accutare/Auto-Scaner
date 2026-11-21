@@ -21,7 +21,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 from . import config as cfgmod
-from .comandos import escolher_scans, interpretar, normalizar, resolver_destino
+from .comandos import escolher_scans, interpretar, normalizar, resolver
 from .dropbox_client import DropboxClient
 from .registro import Registro
 
@@ -218,7 +218,7 @@ def comando(c: Comando):
     if not esc.ok:
         return {"ok": False, "mensagem": esc.mensagem, "numero": esc.numero,
                 "opcoes_arquivo": [_scan_json(a) for a in esc.opcoes]}
-    d = resolver_destino(cmd.segmentos, indice())
+    d = resolver(cmd, indice(), RAIZES, dbx.listar_pastas)
     base = {"arquivos": [_scan_json(a) for a in esc.arquivos]}
     if not d.ok:
         return {**base, "ok": False, "mensagem": d.mensagem,

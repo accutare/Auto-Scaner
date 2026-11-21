@@ -38,6 +38,7 @@ class Comando:
     numeros: list[str]           # last digits of scan names
     todos: bool                  # "all"
     segmentos: list[str]         # destination, one entry per folder level given
+    caminho_completo: bool = False   # pasted full path (File Explorer "C:\\Users\\...\\Dropbox\\..." or "/...")
 
 
 def _limpa(tok: str) -> str:
@@ -48,8 +49,15 @@ def interpretar(texto: str) -> Comando | None:
     t = (texto or "").strip()
     for a, b in (("->", ">"), ("=>", ">"), ("›", ">"), ("»", ">")):
         t = t.replace(a, b)
-    m = DIVISAO.search(t)
-    if m:
+    m = None if "\\" in t else DIVISAO.search(t)
+    if "\\" in t:
+        # pasted from File Explorer: numbers/words first, then the path (folder names may contain " to ")
+        toks = t.split()
+        i = 0
+        while i < len(toks) and (_limpa(toks[i]).isdigit() or _limpa(toks[i]) in ENCHIMENTO | TODOS | {"to", "into"}):
+            i += 1
+        esq, dir_ = " ".join(toks[:i]), " ".join(toks[i:])
+    elif m:
         esq, dir_ = t[:m.start()], t[m.end():]
         esq_toks = [_limpa(x) for x in esq.split()]
         sobra = [x for x in esq_toks if x and not x.isdigit() and x not in ENCHIMENTO | TODOS]
@@ -77,7 +85,8 @@ def interpretar(texto: str) -> Comando | None:
         segmentos = segmentos[0].split()
     if not segmentos:
         return None
-    return Comando(numeros, todos, segmentos)
+    completo = "\\" in t or dir_.strip().startswith("/")
+    return Comando(numeros, todos, segmentos, completo)
 
 
 # ---------------------------------------------------------------- which scans
@@ -177,3 +186,60 @@ def resolver_destino(segmentos: list[str], indice: list[tuple[str, int, list[str
     melhores = [c for c in cands if c[0] == cands[0][0]]
     return Destino(False, f"{len(melhores)} folders match “{' / '.join(segmentos)}”. Which one?",
                    opcoes=[c[2] for c in melhores[:12]])
+
+
+# ---------------------------------------------------------------- full paths and live folder walk
+def _nome_igual(seg: str, nome: str) -> bool:
+    return seg.strip().lower() == nome.strip().lower() or normalizar(seg) == normalizar(nome)
+
+
+def ancorar(segmentos: list[str], raizes: list[str]):
+    """'C:/Users/x/Dropbox/!Accurate.../Client Data/AV1000.../Test' -> ('/!Accurate...', ['Client Data', ...])."""
+    for i, seg in enumerate(segmentos):
+        for r in raizes:
+            if _nome_igual(seg, r.rstrip("/").split("/")[-1]):
+                return r, segmentos[i + 1:]
+    return None, None
+
+
+def caminhar(raiz: str, segmentos: list[str], listar) -> Destino:
+    """Walks the real Dropbox folders level by level (finds folders made after the daily map)."""
+    atual = raiz.rstrip("/")
+    for seg in segmentos:
+        nomes = listar(atual)
+        exatos = [n for n in nomes if _nome_igual(seg, n)]
+        if len(exatos) == 1:
+            escolha = exatos[0]
+        else:
+            notas = sorted((q, n) for n in nomes if (q := casa_segmento(seg, n)) is not None)
+            melhores = [n for q, n in notas if q == notas[0][0]] if notas else []
+            onde = atual.split("/")[-1]
+            if len(melhores) != 1:
+                if melhores:
+                    return Destino(False, f"More than one folder inside “{onde}” matches “{seg}”. Which one?",
+                                   opcoes=[f"{atual}/{n}" for n in melhores[:12]])
+                return Destino(False, f"There is no folder “{seg}” inside “{onde}”. "
+                                      + ("These are the folders there:" if nomes else "That folder has no subfolders."),
+                               opcoes=[f"{atual}/{n}" for n in nomes[:12]])
+            escolha = melhores[0]
+        atual = f"{atual}/{escolha}"
+    return Destino(True, caminho=atual)
+
+
+def resolver(cmd: Comando, indice, raizes: list[str], listar) -> Destino:
+    raiz, resto = ancorar(cmd.segmentos, raizes)
+    if raiz:
+        if not resto:
+            return Destino(False, f"Choose a folder inside “{raiz.split('/')[-1]}”, not the main folder itself.")
+        return caminhar(raiz, resto, listar)
+    if cmd.caminho_completo:
+        nomes = " or ".join(f"“{r.split('/')[-1]}”" for r in raizes)
+        return Destino(False, f"That path is outside the folders the app can file into. It must be inside {nomes}.")
+    d = resolver_destino(cmd.segmentos, indice)
+    if d.ok or d.opcoes:
+        return d
+    for r in raizes:   # not in the map yet (new folder): look at the real folders
+        w = caminhar(r, cmd.segmentos, listar)
+        if w.ok or (w.opcoes and "matches" in w.mensagem):
+            return w
+    return d
